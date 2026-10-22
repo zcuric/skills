@@ -1,0 +1,28 @@
+{
+  "tracker": "auto",
+  "branchPattern": "{type}/{key}-{slug}",
+  "titlePrefix": "[{key}]",
+  "linkLine": "[{key}]({url})",
+  "prBody": "visual-pr",
+  "reviewers": ["alice", "bob"],
+  "requestReviewers": "on-risk",
+  "assignee": "@me",
+  "labels": {
+    "typeBug": "bug",
+    "typeFeature": "enhancement",
+    "stateReview": "code review",
+    "aiChangesRequested": "ai: changes requested",
+    "aiLgtm": "ai: lgtm",
+    "aiVerified": "ai: verified",
+    "readyToMerge": "ready to merge",
+    "needsWork": "needs more work"
+  },
+  "lint": "npm run lint",
+  "test": "npm test",
+  "e2e": "e2e-verify",
+  "securityAgent": "security-reviewer",
+  "siblings": [],
+  "rules": ["CLAUDE.md"],
+  "criteriaDir": "~/.claude/pipeline/{repo}/{ticket}",
+  "mergeMethod": "squash"
+}

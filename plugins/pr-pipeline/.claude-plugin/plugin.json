@@ -1,0 +1,44 @@
+{
+  "name": "pr-pipeline",
+  "version": "0.3.0",
+  "description": "Takes a ticket (Jira, GitHub issue, Linear, or the task in words) through nine recorded stages to a merge-ready PR, routes each stage to a model by task class, reviews with Claude, Codex or OpenCode, and shows checks, review threads and merge inside a pane so nothing needs opening on GitHub.",
+  "license": "MIT",
+  "author": { "name": "Zdravko Curic", "url": "https://github.com/zcuric" },
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "reviewer": {
+      "type": "string",
+      "title": "Review backend",
+      "description": "Which harness runs the AI review stage",
+      "options": ["claude", "codex", "opencode"],
+      "default": "claude"
+    },
+    "review_model": {
+      "type": "string",
+      "title": "Review model",
+      "description": "Model for the AI review when the routing table does not pick one (claude: opus, sonnet, haiku; codex: gpt-5-codex, gpt-5, o3; opencode: provider/model)",
+      "default": "opus"
+    },
+    "review_effort": {
+      "type": "string",
+      "title": "Review effort",
+      "description": "Reasoning effort for the AI review",
+      "options": ["low", "medium", "high", "xhigh", "max"],
+      "default": "low"
+    },
+    "tracker": {
+      "type": "string",
+      "title": "Ticket tracker",
+      "description": "Ticket tracker; auto detects from the /pipeline argument and the repo profile",
+      "options": ["auto", "jira", "github", "linear", "text"],
+      "default": "auto"
+    },
+    "merge_method": {
+      "type": "string",
+      "title": "Merge method",
+      "description": "How the pane's Merge button merges",
+      "options": ["squash", "merge", "rebase"],
+      "default": "squash"
+    }
+  }
+}

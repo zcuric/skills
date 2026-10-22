@@ -1,0 +1,17 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "zcuric",
+  "description": "Claude Code plugins and skills by Zdravko Curic.",
+  "owner": {
+    "name": "Zdravko Curic",
+    "url": "https://github.com/zcuric"
+  },
+  "plugins": [
+    {
+      "name": "pr-pipeline",
+      "description": "Takes a ticket (Jira, GitHub issue, Linear, or the task in words) through nine recorded stages to a merge-ready PR, routes each stage to a model by task class, reviews with Claude, Codex or OpenCode, and shows checks, review threads and merge inside a pane so nothing needs opening on GitHub.",
+      "source": "./plugins/pr-pipeline",
+      "category": "productivity"
+    }
+  ]
+}

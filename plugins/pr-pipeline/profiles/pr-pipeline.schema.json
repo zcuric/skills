@@ -1,0 +1,53 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/zcuric/skills/plugins/pr-pipeline/profiles/pr-pipeline.schema.json",
+  "title": "pr-pipeline repo profile",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "$schema": { "type": "string" },
+    "tracker": { "type": "string", "enum": ["auto", "jira", "github", "linear", "text"] },
+    "branchPattern": { "type": "string" },
+    "titlePrefix": { "type": "string" },
+    "linkLine": { "type": "string" },
+    "prBody": { "type": "string", "enum": ["visual-pr", "plain"] },
+    "reviewers": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
+    "requestReviewers": { "type": "string", "enum": ["always", "on-risk", "never"] },
+    "assignee": { "type": "string" },
+    "labels": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "typeBug": { "type": ["string", "null"] },
+        "typeFeature": { "type": ["string", "null"] },
+        "stateReview": { "type": ["string", "null"] },
+        "aiChangesRequested": { "type": ["string", "null"] },
+        "aiLgtm": { "type": ["string", "null"] },
+        "aiVerified": { "type": ["string", "null"] },
+        "readyToMerge": { "type": ["string", "null"] },
+        "needsWork": { "type": ["string", "null"] }
+      }
+    },
+    "lint": { "type": "string" },
+    "test": { "type": "string" },
+    "e2e": { "type": ["string", "null"] },
+    "e2ePolicy": { "type": "string", "enum": ["auto", "always", "never"] },
+    "securityAgent": { "type": ["string", "null"] },
+    "siblings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "path"],
+        "properties": {
+          "name": { "type": "string" },
+          "path": { "type": "string" },
+          "contracts": { "type": "boolean" }
+        }
+      }
+    },
+    "rules": { "type": "array", "items": { "type": "string" } },
+    "criteriaDir": { "type": "string" },
+    "mergeMethod": { "type": "string", "enum": ["squash", "merge", "rebase"] }
+  }
+}
