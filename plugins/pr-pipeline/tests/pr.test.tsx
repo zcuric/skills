@@ -82,7 +82,7 @@ test('merge is offered without approval once risk is low and confidence is at le
 
   const before = await $.ui.mount({ ...PANE, surface: 'desktop' })
   expect(await before.find({ key: 'pr:merge' })).toBeUndefined()
-  expect(await before.find({ type: 'Text', text: /Merge: needs approval/ })).toBeDefined()
+  expect(await before.find({ type: 'Text', text: /Merge: needs a human approval \(risk not assessed\) — request one on GitHub/ })).toBeDefined()
   await before.unmount()
 
   await $.tool.call({ tool: TOOL, action: 'stage', branch: 'feature/guard', stage: 'acceptance', status: 'done', confidence: 85 })

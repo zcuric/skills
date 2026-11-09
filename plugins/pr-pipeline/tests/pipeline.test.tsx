@@ -1,6 +1,13 @@
 import { expect, mock, test } from 'claude-code/testing'
+import type { Engine } from 'claude-code/testing'
 
-import { boot, PANE, START, TOOL } from './kit'
+import { boot, PANE, PR_URL, START, TOOL } from './kit'
+
+const runOf = async ($: Engine, branch: string) =>
+  JSON.parse(String((await $.tool.call({ tool: TOOL, action: 'status', branch })).result))
+
+const stageOf = async ($: Engine, branch: string, id: string) =>
+  (await runOf($, branch)).stages.find((stage: { id: string }) => stage.id === id)
 
 test('a run moves through stages and is written to the store', async ($, on) => {
   boot(on)
@@ -138,4 +145,127 @@ test('the header shows the run confidence, the merge-risk badge and what needs a
     expect(await ui.find({ key: 'stage:risk' })).toBeDefined()
     await ui.unmount()
   }
+})
+
+test('re-running a stage starts a new attempt, keeps its history and judges only the latest outcome', async ($, on) => {
+  const { clock } = boot(on)
+  mock.store(on)
+  await $.session.start(START)
+  await $.tool.call({ tool: TOOL, action: 'start', branch: 'b', ticket: 'HWEPD-40' })
+  await $.tool.call({ tool: TOOL, action: 'stage', branch: 'b', stage: 'review', status: 'running' })
+  await clock.advance(60_000)
+  await $.tool.call({ tool: TOOL, action: 'stage', branch: 'b', stage: 'review', status: 'done', summary: 'changes requested · 2 high', confidence: 60, flag: 'Unverified finding dropped', note: 'Second pass needed' })
+  await clock.advance(60_000)
+  await $.tool.call({ tool: TOOL, action: 'stage', branch: 'b', stage: 'review', status: 'running' })
+
+  const rerun = await stageOf($, 'b', 'review')
+  expect(rerun.attempt).toBe(2)
+  expect(rerun.startedAt).toBe(1_120_000)
+  expect(rerun.finishedAt).toBeUndefined()
+  expect(rerun.summary).toBeUndefined()
+  expect(rerun.confidence).toBeUndefined()
+  expect(rerun.flags).toEqual(['Unverified finding dropped'])
+  expect(rerun.notes).toEqual(['Second pass needed'])
+
+  await clock.advance(30_000)
+  await $.tool.call({ tool: TOOL, action: 'stage', branch: 'b', stage: 'review', status: 'done', summary: 'lgtm · 0 findings', confidence: 90 })
+  await clock.advance(30_000)
+  await $.tool.call({ tool: TOOL, action: 'stage', branch: 'b', stage: 'review', did: 'Swapped the AI label' })
+  expect((await stageOf($, 'b', 'review')).finishedAt).toBe(1_150_000)
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(await ui.find({ type: 'Text', text: /^attempt 2$/ })).toBeDefined()
+  expect((await ui.find({ key: 'attn:review' }))?.text).not.toMatch(/changes requested/)
+  await ui.unmount()
+})
+
+test('a criterion recorded again replaces its earlier verdict', async ($, on) => {
+  boot(on)
+  mock.store(on)
+  await $.session.start(START)
+  await $.tool.call({ tool: TOOL, action: 'stage', branch: 'b', stage: 'acceptance', criterion: 'Past dates are refused', met: 'no' })
+  await $.tool.call({ tool: TOOL, action: 'stage', branch: 'b', stage: 'acceptance', criterion: 'Past dates are refused', met: 'yes', evidence: 'DueDateTest' })
+  expect((await stageOf($, 'b', 'acceptance')).criteria).toEqual([{ text: 'Past dates are refused', met: 'yes', evidence: 'DueDateTest' }])
+})
+
+test('an unknown action, status or tracker and a fractional confidence are refused', async ($, on) => {
+  boot(on)
+  mock.store(on)
+  await $.session.start(START)
+  expect((await $.tool.call({ tool: TOOL, action: 'stages', branch: 'b', stage: 'enhance', status: 'done' })).deny).toMatch(/"action" must be one of/)
+  expect((await $.tool.call({ tool: TOOL, action: 'stage', branch: 'b', stage: 'enhance', status: 'finished' })).deny).toMatch(/"status" must be one of/)
+  expect((await $.tool.call({ tool: TOOL, action: 'stage', branch: 'b', stage: 'enhance', confidence: 0.92 })).deny).toMatch(/92, not 0\.92/)
+  expect((await $.tool.call({ tool: TOOL, action: 'stage', branch: 'b', stage: 'enhance', confidence: 140 })).deny).toMatch(/0 to 100/)
+  expect((await $.tool.call({ tool: TOOL, action: 'start', branch: 'b', tracker: 'trello' })).deny).toMatch(/"tracker" must be one of/)
+  expect(await runOf($, 'b')).toBeNull()
+})
+
+test('a link adopts a PR only when the run has none or on the pr stage from its repo, and unlink clears it', async ($, on) => {
+  boot(on)
+  mock.store(on)
+  await $.session.start(START)
+  await $.tool.call({ tool: TOOL, action: 'start', branch: 'b', ticket: 'HWEPD-41', prUrl: PR_URL })
+  await $.tool.call({ tool: TOOL, action: 'link', branch: 'b', stage: 'review', label: 'Sibling', href: 'https://github.com/o/r/pull/50' })
+  await $.tool.call({ tool: TOOL, action: 'link', branch: 'b', stage: 'pr', label: 'Other repo', href: 'https://github.com/x/y/pull/3' })
+  expect((await runOf($, 'b')).prUrl).toBe(PR_URL)
+
+  await $.tool.call({ tool: TOOL, action: 'link', branch: 'b', stage: 'pr', label: 'Replacement', href: 'https://github.com/o/r/pull/43' })
+  expect((await runOf($, 'b')).prUrl).toBe('https://github.com/o/r/pull/43')
+
+  const unlinked = await $.tool.call({ tool: TOOL, action: 'unlink', branch: 'b', stage: 'pr', href: 'https://github.com/o/r/pull/43' })
+  expect(unlinked.result).toMatch(/no PR now/)
+  const run = await runOf($, 'b')
+  expect(run.prUrl).toBeUndefined()
+  expect(run.stages.find((stage: { id: string }) => stage.id === 'pr').links).toEqual([{ label: 'Other repo', href: 'https://github.com/x/y/pull/3' }])
+  expect((await $.tool.call({ tool: TOOL, action: 'unlink', branch: 'b', stage: 'pr', href: 'https://example.com/nope' })).deny).toMatch(/no link/)
+})
+
+test('the pane shows run age, finished stage durations and a stalled stage', async ($, on) => {
+  const { clock } = boot(on)
+  mock.store(on)
+  await $.session.start(START)
+  await $.tool.call({ tool: TOOL, action: 'start', branch: 'b', ticket: 'HWEPD-42' })
+  await $.tool.call({ tool: TOOL, action: 'stage', branch: 'b', stage: 'enhance', status: 'running' })
+  await clock.advance(150_000)
+  await $.tool.call({ tool: TOOL, action: 'stage', branch: 'b', stage: 'enhance', status: 'done' })
+  await $.tool.call({ tool: TOOL, action: 'stage', branch: 'b', stage: 'implement', status: 'running' })
+
+  const fresh = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(await fresh.find({ type: 'Text', text: /^started 2m ago · updated 0s ago$/ })).toBeDefined()
+  expect(await fresh.find({ type: 'Text', text: /^2m$/ })).toBeDefined()
+  expect(await fresh.find({ key: 'attn:stalled' })).toBeUndefined()
+  await fresh.unmount()
+
+  await clock.advance(72 * 60_000)
+  const stale = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect((await stale.find({ key: 'attn:stalled' }))?.text).toBe('Stalled at Implement · no update 1h12m')
+  await stale.unmount()
+})
+
+test('the header confidence comes from acceptance or review only', async ($, on) => {
+  boot(on)
+  mock.store(on)
+  await $.session.start(START)
+  await $.tool.call({ tool: TOOL, action: 'start', branch: 'b', ticket: 'HWEPD-43' })
+  await $.tool.call({ tool: TOOL, action: 'stage', branch: 'b', stage: 'enhance', status: 'done', confidence: 95 })
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(await ui.find({ type: 'Text', text: /Confidence —/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('the status line clears when a stage fails or the run closes', async ($, on) => {
+  const { statuses } = boot(on)
+  mock.store(on)
+  await $.session.start(START)
+  await $.tool.call({ tool: TOOL, action: 'start', branch: 'b', ticket: 'HWEPD-44' })
+  await $.tool.call({ tool: TOOL, action: 'stage', branch: 'b', stage: 'implement', status: 'running' })
+  expect(statuses.at(-1)).toBe('pipeline: Implement')
+  await $.tool.call({ tool: TOOL, action: 'stage', branch: 'b', stage: 'implement', status: 'failed' })
+  expect(statuses.at(-1)).toBeUndefined()
+
+  await $.tool.call({ tool: TOOL, action: 'stage', branch: 'b', stage: 'implement', status: 'running' })
+  expect(statuses.at(-1)).toBe('pipeline: Implement')
+  await $.tool.call({ tool: TOOL, action: 'close', branch: 'b' })
+  expect(statuses.at(-1)).toBeUndefined()
 })

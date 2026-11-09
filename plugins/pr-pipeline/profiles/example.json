@@ -4,9 +4,6 @@
   "titlePrefix": "[{key}]",
   "linkLine": "[{key}]({url})",
   "prBody": "visual-pr",
-  "reviewers": ["alice", "bob"],
-  "requestReviewers": "on-risk",
-  "assignee": "@me",
   "labels": {
     "typeBug": "bug",
     "typeFeature": "enhancement",

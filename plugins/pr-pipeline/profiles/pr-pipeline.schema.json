@@ -11,9 +11,6 @@
     "titlePrefix": { "type": "string" },
     "linkLine": { "type": "string" },
     "prBody": { "type": "string", "enum": ["visual-pr", "plain"] },
-    "reviewers": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
-    "requestReviewers": { "type": "string", "enum": ["always", "on-risk", "never"] },
-    "assignee": { "type": "string" },
     "labels": {
       "type": "object",
       "additionalProperties": false,

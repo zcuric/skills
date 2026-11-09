@@ -23,13 +23,13 @@ export const STORE_KEY = 'runs'
 export const STAGES: ReadonlyArray<{ id: StageId; label: string; blurb: string }> = [
   { id: 'enhance', label: 'Enhance', blurb: 'Ticket read, criteria extracted, spec posted, task class picked' },
   { id: 'implement', label: 'Implement', blurb: 'Bug reproduced or feature planned, code and tests written' },
-  { id: 'pr', label: 'Create PR', blurb: 'PR opened with the ticket link, change outline, labels, reviewers' },
+  { id: 'pr', label: 'Create PR', blurb: 'PR opened with the ticket link, change outline and labels' },
   { id: 'review', label: 'AI review', blurb: 'Line comments with confidence, reviewer and model picked by class' },
   { id: 'address', label: 'Address', blurb: 'Review comments fixed and each thread answered' },
   { id: 'verify', label: 'E2E verify', blurb: 'Driven against the real stack, before/after screenshots' },
   { id: 'acceptance', label: 'Acceptance', blurb: 'Every criterion mapped to evidence' },
   { id: 'risk', label: 'Merge risk', blurb: 'Alignment, impact, verification, rollback, detection' },
-  { id: 'proof', label: 'Final proof', blurb: 'Proof comment, reviewers tagged, labels set' },
+  { id: 'proof', label: 'Final proof', blurb: 'Proof comment, human-look verdict, labels set' },
 ]
 
 export const BACKENDS: readonly Backend[] = ['claude', 'codex', 'opencode']
@@ -89,11 +89,12 @@ export const normaliseRuns = (raw: unknown): Runs => {
   )
 }
 
-const freshRun = (key: string, now: number): PipelineRun => ({
+export const freshRun = (key: string, now: number): PipelineRun => ({
   key,
   branch: branchOfKey(key),
   repo: repoOfKey(key),
   stages: STAGES.map(stage => freshStage(stage.id)),
+  startedAt: now,
   updatedAt: now,
 })
 
@@ -143,15 +144,21 @@ export async function resolveRun(
   return { key, repo, cwd }
 }
 
-async function rekeyRun($: EngineInterface, from: string, to: string, repo: RepoRef | null): Promise<void> {
+/** Never overwrites a run already at `to`. */
+export async function rekeyRun($: EngineInterface, from: string, to: string, repo: RepoRef | null): Promise<boolean> {
+  await followStoreOnce($)
+  let isMoved = false
   await update($, runs, all => {
-    const legacy = all[from]
-    if (legacy === undefined) return all
+    const moving = all[from]
+    if (moving === undefined || all[to] !== undefined) return all
+    isMoved = true
     const { [from]: _dropped, ...rest } = all
-    return { ...rest, [to]: { ...legacy, key: to, repo: legacy.repo ?? repo?.slug, host: legacy.host ?? repo?.host } }
+    return { ...rest, [to]: { ...moving, key: to, branch: branchOfKey(to), repo: moving.repo ?? repo?.slug, host: moving.host ?? repo?.host } }
   })
+  if (!isMoved) return false
   await update($, selectedKey, chosen => (chosen === from ? to : chosen))
   await persist($)
+  return true
 }
 
 export async function changeRun(
@@ -160,12 +167,13 @@ export async function changeRun(
   fn: (run: PipelineRun) => PipelineRun,
   options: { touch?: boolean } = {},
 ): Promise<PipelineRun> {
+  await followStoreOnce($)
   const now = await $.clock.now()
   let changed: PipelineRun | undefined
   await update($, runs, all => {
     const existing = all[key] !== undefined ? normaliseRun(all[key], key) : freshRun(key, now)
     const next = fn(existing)
-    changed = options.touch === false ? next : { ...next, updatedAt: now }
+    changed = options.touch === false ? next : { ...next, startedAt: next.startedAt ?? now, updatedAt: now }
     return { ...all, [key]: changed }
   })
   await persist($)
@@ -179,13 +187,21 @@ export async function closeRun($: EngineInterface, key: string): Promise<Pipelin
   const all = await read($, runs)
   await update($, selectedKey, chosen => (chosen === key || chosen === null ? pickedKey(all, null) : chosen))
   await update($, openStage, () => null)
+  $.ui.status(undefined)
   return closed
+}
+
+/** Same as `start` on a closed run: a merged PR closes it again five minutes after the next fetch. */
+export async function reopenRun($: EngineInterface, key: string): Promise<void> {
+  await changeRun($, key, ({ closedAt: _closedAt, mergedAt: _mergedAt, ...run }) => run)
+  await update($, selectedKey, () => key)
+  await update($, openStage, () => null)
 }
 
 const hasRunningStage = (run: PipelineRun): boolean => run.stages.some(stage => stage.status === 'running')
 
 export const pruneRuns = (all: Runs, now: number, keep: string | null): Runs => {
-  const isKept = (run: PipelineRun): boolean => run.key === keep || hasRunningStage(run)
+  const isKept = (run: PipelineRun): boolean => run.key === keep || (hasRunningStage(run) && now - run.updatedAt <= 7 * DAY_MS)
   const fresh = Object.values(all).filter(run => {
     if (isKept(run)) return true
     if (now - run.updatedAt > 30 * DAY_MS) return false
@@ -266,7 +282,7 @@ export const confidenceColor = (value: number | undefined): Color => {
   return 'red'
 }
 
-/** Acceptance confidence (or its criteria met %), else review's, else the latest stage that has one. */
+/** Acceptance confidence (or its criteria met %), else review's; undefined when neither scored. */
 export const runConfidence = (run: PipelineRun): number | undefined => {
   const acceptance = run.stages.find(stage => stage.id === 'acceptance')
   if (acceptance?.confidence !== undefined) return acceptance.confidence
@@ -274,10 +290,16 @@ export const runConfidence = (run: PipelineRun): number | undefined => {
     const met = acceptance.criteria.filter(one => one.met === 'yes').length
     return Math.round((met / acceptance.criteria.length) * 100)
   }
-  const review = run.stages.find(stage => stage.id === 'review')
-  if (review?.confidence !== undefined) return review.confidence
-  return [...run.stages].reverse().find(stage => stage.confidence !== undefined)?.confidence
+  return run.stages.find(stage => stage.id === 'review')?.confidence
 }
 
 export const approvalRequired = (run: PipelineRun): boolean =>
   !(run.risk === 'low' && (runConfidence(run) ?? 0) >= 80)
+
+/** Why the merge gate wants a human approval: `risk medium`, `confidence 72%`. */
+export const approvalReason = (run: PipelineRun): string => {
+  if (run.risk === undefined) return 'risk not assessed'
+  if (run.risk !== 'low') return `risk ${run.risk}`
+  const confidence = runConfidence(run)
+  return confidence === undefined ? 'confidence not scored' : `confidence ${confidence}%`
+}

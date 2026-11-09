@@ -25,6 +25,7 @@ import {
   MERGE_METHODS,
   STAGES,
   TRACKER_SETTINGS,
+  approvalReason,
   approvalRequired,
   confidenceColor,
   modelChip,
@@ -58,12 +59,20 @@ const BODY_LIMIT = 1500
 
 export const isHuman = (login: string): boolean => !BOT_LOGIN.test(login)
 
-export const elapsed = (stage: Stage, now: number): string => {
-  if (stage.startedAt === undefined) return ''
-  const seconds = Math.max(0, Math.round(((stage.finishedAt ?? now) - stage.startedAt) / 1000))
+/** `45s`, `12m`, `1h12m`, `2d3h`. */
+export const duration = (ms: number): string => {
+  const seconds = Math.max(0, Math.round(ms / 1000))
   if (seconds < 60) return `${seconds}s`
-  return `${Math.floor(seconds / 60)}m${seconds % 60}s`
+  const minutes = Math.floor(seconds / 60)
+  if (minutes < 60) return `${minutes}m`
+  const hours = Math.floor(minutes / 60)
+  if (hours < 24) return `${hours}h${minutes % 60 > 0 ? `${minutes % 60}m` : ''}`
+  const days = Math.floor(hours / 24)
+  return `${days}d${hours % 24 > 0 ? `${hours % 24}h` : ''}`
 }
+
+export const elapsed = (stage: Stage, now: number): string =>
+  stage.startedAt === undefined ? '' : duration((stage.finishedAt ?? now) - stage.startedAt)
 
 export function card(
   els: Els,
@@ -150,7 +159,7 @@ export async function prCard($: EngineInterface, e: PaneEvent, ctx: PaneContext)
   const failing = failedChecks(snapshot)
   const decision = DECISION[snapshot.reviewDecision] ?? { text: 'No review decision', color: 'gray' as Color }
   const reviewers = [...new Map(snapshot.reviews.map(review => [review.author, review.state])).entries()]
-  const guard = mergeGuard(snapshot, { approvalRequired: approvalRequired(run) })
+  const guard = mergeGuard(snapshot, { approvalRequired: approvalRequired(run), why: approvalReason(run) })
   const rerunIds = rerunnableIds(key, snapshot)
   const ciRunIds = failingRunIds(snapshot)
   const isOpen = snapshot.state === 'OPEN'

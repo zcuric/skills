@@ -112,7 +112,10 @@ test('mergeGuard passes an approved, clean PR', () => {
 test('mergeGuard lets a low-risk run merge without approval', () => {
   const pending = snapshot({ reviewDecision: 'REVIEW_REQUIRED' })
   expect(mergeGuard(pending, { approvalRequired: false })).toEqual({ ok: true })
-  expect(mergeGuard(pending, { approvalRequired: true })).toEqual({ ok: false, reasons: ['needs approval'] })
+  expect(mergeGuard(pending, { approvalRequired: true, why: 'risk medium' })).toEqual({
+    ok: false,
+    reasons: ['needs a human approval (risk medium) — request one on GitHub'],
+  })
 })
 
 test('mergeGuard lists reasons in order', () => {

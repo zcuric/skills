@@ -4,30 +4,40 @@ import type { EngineInterface } from 'claude-code'
 import type {
   Criterion,
   Met,
+  PipelineAction,
   PipelineOptions,
   PipelineRun,
   PipelineToolInput,
+  PrState,
   Risk,
   Runs,
   Stage,
   StageId,
   StageLink,
   StageModel,
+  StageStatus,
   Tier,
 } from '../types'
-import { parsePrUrl, prPageUrl, replyToThread, resolveThread } from './github'
+import { currentBranch, git, parsePrUrl, prPageUrl, replyToThread, resolveThread } from './github'
 import { prRefOf, refreshPr, schedulePrRefresh } from './pr'
 import {
-  BACKENDS, CLAUDE_MODELS, EFFORTS, STAGES, changeRun, closeRun, ensureHarnesses, isStageId, pipelineOptions, resolveRun, stageLabel,
+  BACKENDS, CLAUDE_MODELS, EFFORTS, STAGES, TRACKERS, changeRun, closeRun, ensureHarnesses, followStoreOnce, freshRun, isOpenRun,
+  isStageId, pipelineOptions, rekeyRun, repoFor, resolveRun, runKey, stageLabel,
 } from './runs'
 
 const runs = atom({ plugin: 'pr-pipeline', key: 'runs' } as const, {} as Runs)
 const selectedKey = atom({ plugin: 'pr-pipeline', key: 'selectedKey' } as const, null as string | null)
 const openStage = atom({ plugin: 'pr-pipeline', key: 'openStage' } as const, null as StageId | null)
+const prStates = atom({ plugin: 'pr-pipeline', key: 'pr' } as const, {} as Record<string, PrState>)
 
+const ACTIONS: readonly PipelineAction[] = ['start', 'stage', 'link', 'unlink', 'status', 'pr', 'pr-reply', 'pr-resolve', 'settings', 'close']
+const STATUSES: readonly StageStatus[] = ['pending', 'running', 'done', 'failed', 'skipped']
+const ENDINGS: readonly StageStatus[] = ['done', 'failed', 'skipped']
 const TIERS: readonly Tier[] = ['S', 'M', 'L']
 const RISKS: readonly Risk[] = ['low', 'medium', 'high']
 const METS: readonly Met[] = ['yes', 'partial', 'no']
+const PR_PAGE = /\/pull\/\d+\/?$/
+const BRANCH_MOVE = /\bgit\s+(checkout\s+-b|switch\s+(?:-c|--create)|branch\s+(?:-m|-M|--move))\s+([^;&|\n]+)/
 const REFRESH_STAGES: readonly StageId[] = ['pr', 'review', 'address', 'proof']
 // Host-agnostic so GitHub Enterprise PR urls are captured too.
 const PR_URL = /https?:\/\/[^/\s]+\/[^/\s]+\/[^/\s]+\/pull\/\d+/
@@ -50,6 +60,15 @@ const withLink = (stage: Stage, link: StageLink): Stage =>
   stage.links.some(known => known.href === link.href)
     ? { ...stage, links: stage.links.map(known => (known.href === link.href ? link : known)) }
     : { ...stage, links: [...stage.links, link] }
+
+const withCriterion = (criteria: Criterion[], criterion: Criterion): Criterion[] =>
+  criteria.some(known => known.text === criterion.text)
+    ? criteria.map(known => (known.text === criterion.text ? criterion : known))
+    : [...criteria, criterion]
+
+/** A percentage; a fraction below 1 is a ratio sent by mistake. */
+const isPercent = (value: unknown): boolean =>
+  typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 100 && !(value > 0 && value < 1)
 
 const stageModel = (input: PipelineToolInput, known: StageModel | undefined): StageModel | undefined => {
   if (input.backend === undefined && input.model === undefined && input.effort === undefined) return known
@@ -96,15 +115,23 @@ async function threadAnswer($: EngineInterface, input: PipelineToolInput, key: s
 }
 
 export async function handleTool($: EngineInterface, input: PipelineToolInput, options: PipelineOptions): Promise<ToolAnswer> {
+  if (!ACTIONS.includes(input.action)) return deny(`"action" must be one of ${ACTIONS.join(', ')}.`)
   if (input.action === 'settings') return settingsAnswer($, input, options)
   if (input.tier !== undefined && !TIERS.includes(input.tier)) return deny('"tier" must be S, M or L.')
   if (input.risk !== undefined && !RISKS.includes(input.risk)) return deny('"risk" must be low, medium or high.')
   if (input.backend !== undefined && !BACKENDS.includes(input.backend)) return deny(`"backend" must be one of ${BACKENDS.join(', ')}.`)
   if (input.effort !== undefined && !EFFORTS.includes(input.effort)) return deny(`"effort" must be one of ${EFFORTS.join(', ')}.`)
+  if (input.tracker !== undefined && !TRACKERS.includes(input.tracker)) return deny(`"tracker" must be one of ${TRACKERS.join(', ')}.`)
+  if (input.status !== undefined && !STATUSES.includes(input.status)) return deny(`"status" must be one of ${STATUSES.join(', ')}.`)
+  if (input.confidence !== undefined && !isPercent(input.confidence)) {
+    return deny('"confidence" must be a percentage from 0 to 100: 92, not 0.92.')
+  }
   const resolved = await resolveRun($, input)
   if (resolved === null) return deny('no branch given and none checked out.')
   const { key } = resolved
+  await followStoreOnce($)
   const before = (await read($, runs))[key]
+  const now = await $.clock.now()
 
   if (input.action === 'status') return { result: JSON.stringify(before ?? null) }
   if (input.action === 'close') {
@@ -121,19 +148,24 @@ export async function handleTool($: EngineInterface, input: PipelineToolInput, o
 
   const prUrl = repairedPrUrl(input.prUrl)
   if (input.action === 'start') {
+    const isNewTicket = before?.ticket !== undefined && input.ticket !== undefined && input.ticket !== before.ticket
     // Starting a closed run reopens it; a merged PR closes it again five minutes after the next fetch.
-    const run = await changeRun($, key, ({ closedAt: _closedAt, mergedAt: _mergedAt, ...existing }) => ({
-      ...existing,
-      ticket: input.ticket ?? existing.ticket,
-      ticketUrl: input.ticketUrl ?? existing.ticketUrl,
-      tracker: input.tracker ?? existing.tracker,
-      title: input.title ?? existing.title,
-      prUrl: prUrl ?? repairedPrUrl(existing.prUrl) ?? existing.prUrl,
-      tier: input.tier ?? existing.tier,
-      repo: input.repo ?? existing.repo ?? resolved.repo?.slug,
-      host: existing.host ?? resolved.repo?.host,
-      cwd: resolved.cwd,
-    }))
+    const run = await changeRun($, key, ({ closedAt: _closedAt, mergedAt: _mergedAt, ...kept }) => {
+      const existing = isNewTicket ? freshRun(key, now) : kept
+      return {
+        ...existing,
+        ticket: input.ticket ?? existing.ticket,
+        ticketUrl: input.ticketUrl ?? existing.ticketUrl,
+        tracker: input.tracker ?? existing.tracker,
+        title: input.title ?? existing.title,
+        prUrl: prUrl ?? repairedPrUrl(existing.prUrl) ?? existing.prUrl,
+        tier: input.tier ?? existing.tier,
+        repo: input.repo ?? existing.repo ?? resolved.repo?.slug,
+        host: existing.host ?? resolved.repo?.host,
+        cwd: resolved.cwd,
+      }
+    })
+    if (isNewTicket) await update($, prStates, all => Object.fromEntries(Object.entries(all).filter(([known]) => known !== key)))
     await update($, selectedKey, () => key)
     await update($, openStage, () => null)
     if (run.prUrl !== before?.prUrl) await schedulePrRefresh($, key, 2_000)
@@ -142,18 +174,22 @@ export async function handleTool($: EngineInterface, input: PipelineToolInput, o
 
   if (!isStageId(input.stage)) return deny(`"stage" must be one of ${STAGES.map(s => s.id).join(', ')}.`)
   const stageId = input.stage
-  const now = await $.clock.now()
 
   if (input.action === 'link') {
     if (!input.href) return deny('"link" needs href.')
     const link: StageLink = { label: input.label ?? input.href, href: input.href }
-    const isPrPage = /\/pull\/\d+\/?$/.test(link.href)
-    const run = await changeRun($, key, existing =>
-      withStage({ ...existing, prUrl: isPrPage ? repairedPrUrl(link.href) ?? link.href : existing.prUrl }, stageId, stage => withLink(stage, link)))
+    const linkedPrUrl = PR_PAGE.test(link.href) ? repairedPrUrl(link.href) ?? link.href : undefined
+    const linkedSlug = parsePrUrl(link.href)?.slug
+    const run = await changeRun($, key, existing => {
+      const isAdopted = linkedPrUrl !== undefined && (existing.prUrl === undefined || (stageId === 'pr' && linkedSlug === existing.repo))
+      return withStage({ ...existing, prUrl: isAdopted ? linkedPrUrl : existing.prUrl }, stageId, stage => withLink(stage, link))
+    })
     await update($, selectedKey, () => key)
     if (run.prUrl !== before?.prUrl) await schedulePrRefresh($, key, 2_000)
     return { result: `Linked ${link.label} to ${stageId}.` }
   }
+
+  if (input.action === 'unlink') return unlinkAnswer($, input, key, stageId, before)
 
   if (input.criterion !== undefined && (input.met === undefined || !METS.includes(input.met))) {
     return deny('a "criterion" needs "met" yes, partial or no.')
@@ -166,6 +202,8 @@ export async function handleTool($: EngineInterface, input: PipelineToolInput, o
 
   const run = await changeRun($, key, existing => {
     const model = stageModel(input, existing.models?.[stageId])
+    const restarted = (stage: Stage): Stage =>
+      ({ ...stage, summary: undefined, confidence: undefined, finishedAt: undefined, attempt: (stage.attempt ?? 1) + 1 })
     return withStage({
       ...existing,
       ticket: input.ticket ?? existing.ticket,
@@ -173,21 +211,22 @@ export async function handleTool($: EngineInterface, input: PipelineToolInput, o
       tier: input.tier ?? existing.tier,
       risk: input.risk ?? existing.risk,
       models: model === undefined ? existing.models : { ...existing.models, [stageId]: model },
-    }, stageId, stage => {
-      const nextStatus = status ?? stage.status
-      const isStarting = nextStatus === 'running' && stage.startedAt === undefined
-      const isEnding = nextStatus === 'done' || nextStatus === 'failed' || nextStatus === 'skipped'
+    }, stageId, current => {
+      const isStarting = status === 'running' && current.status !== 'running'
+      const isRestart = isStarting && (current.status !== 'pending' || current.startedAt !== undefined)
+      const isEnding = status !== undefined && status !== current.status && ENDINGS.includes(status)
+      const stage = isRestart ? restarted(current) : current
       return {
         ...stage,
-        status: nextStatus,
+        status: status ?? stage.status,
         startedAt: isStarting ? now : stage.startedAt,
-        finishedAt: isEnding ? now : undefined,
+        finishedAt: isEnding ? now : status !== undefined && !ENDINGS.includes(status) ? undefined : stage.finishedAt,
         summary: input.summary ?? stage.summary,
         confidence: input.confidence ?? stage.confidence,
         did: input.did ? [...stage.did, input.did] : stage.did,
         flags: input.flag ? [...stage.flags, input.flag] : stage.flags,
         notes: input.note ? [...stage.notes, input.note] : stage.notes,
-        criteria: criterion ? [...stage.criteria, criterion] : stage.criteria,
+        criteria: criterion ? withCriterion(stage.criteria, criterion) : stage.criteria,
       }
     })
   })
@@ -196,6 +235,7 @@ export async function handleTool($: EngineInterface, input: PipelineToolInput, o
   const isTransition = status !== undefined && status !== beforeStatus && REFRESH_STAGES.includes(stageId)
   if (isTransition || run.prUrl !== before?.prUrl) await schedulePrRefresh($, key, 2_000)
   if (status === 'running') $.ui.status(`pipeline: ${stageLabel(stageId)}`)
+  if (status === 'failed') $.ui.status(undefined)
   if (status === 'failed') $.ui.toast(`Pipeline stage ${stageId} failed${input.summary ? `: ${input.summary}` : ''}`)
   if (stageId === 'proof' && status === 'done') {
     $.ui.status(undefined)
@@ -207,7 +247,74 @@ export async function handleTool($: EngineInterface, input: PipelineToolInput, o
   return { result: `Stage ${stageId} ${status ?? 'updated'}${input.summary ? `: ${input.summary}` : ''}${tail}.` }
 }
 
-export async function afterBash($: EngineInterface, command: string, stdout: string): Promise<void> {
+async function unlinkAnswer(
+  $: EngineInterface,
+  input: PipelineToolInput,
+  key: string,
+  stageId: StageId,
+  before: PipelineRun | undefined,
+): Promise<ToolAnswer> {
+  if (!input.href) return deny('"unlink" needs href.')
+  if (before === undefined) return deny(`no run for ${key}.`)
+  const href = input.href
+  const isRunPr = before.prUrl !== undefined && (href === before.prUrl || (PR_PAGE.test(href) && repairedPrUrl(href) === before.prUrl))
+  const isLinked = before.stages.some(stage => stage.id === stageId && stage.links.some(link => link.href === href))
+  if (!isLinked && !isRunPr) return deny(`${stageId} has no link to ${href}.`)
+  await changeRun($, key, ({ prUrl, pr, mergedAt, ...existing }) => withStage(
+    isRunPr ? existing : { ...existing, prUrl, pr, mergedAt },
+    stageId,
+    stage => ({ ...stage, links: stage.links.filter(link => link.href !== href) }),
+  ))
+  if (isRunPr) await update($, prStates, all => Object.fromEntries(Object.entries(all).filter(([known]) => known !== key)))
+  return { result: `Unlinked ${href} from ${stageId}${isRunPr ? '; the run has no PR now' : ''}.` }
+}
+
+export type BranchMove = { kind: 'create' | 'rename'; from?: string; to: string }
+
+/** `git checkout -b new`, `git switch -c new`, `git branch -m [old] new`; null for anything else. */
+export const parseBranchMove = (command: string): BranchMove | null => {
+  const match = command.match(BRANCH_MOVE)
+  if (match === null) return null
+  const kind = match[1]?.startsWith('branch') ? 'rename' : 'create'
+  const names = (match[2] ?? '').trim().split(/\s+/).filter(word => word !== '' && !word.startsWith('-')).map(word => word.replace(/^['"]|['"]$/g, ''))
+  const [first, second] = names
+  if (first === undefined) return null
+  if (kind === 'rename' && second !== undefined) return { kind, from: first, to: second }
+  return { kind, to: first }
+}
+
+export type PendingMove = BranchMove & { from: string }
+
+/** Read before the command runs, so the branch it leaves is known. */
+export async function branchMoveBefore($: EngineInterface, command: string): Promise<PendingMove | null> {
+  const move = parseBranchMove(command)
+  if (move === null) return null
+  const from = move.from ?? (await currentBranch($, await $.session.cwd()))
+  return from === null || from === move.to ? null : { ...move, from }
+}
+
+async function hasBranch($: EngineInterface, name: string, cwd: string): Promise<boolean> {
+  return (await git($, ['rev-parse', '--verify', '--quiet', `refs/heads/${name}`], cwd)).ok
+}
+
+/** Moves the open run of the branch left behind onto the new one; a run with a PR stays on a branch it did not rename. */
+async function followBranchMove($: EngineInterface, move: PendingMove): Promise<void> {
+  const cwd = await $.session.cwd()
+  const repo = await repoFor($, cwd)
+  const from = runKey(repo?.slug ?? null, move.from)
+  await followStoreOnce($)
+  const run = (await read($, runs))[from]
+  if (run === undefined || !isOpenRun(run) || run.branch !== move.from) return
+  if (run.cwd !== undefined && run.cwd !== cwd) return
+  if (move.kind === 'create' && run.prUrl !== undefined) return
+  const isMoved = (await currentBranch($, cwd)) === move.to ||
+    (move.kind === 'rename' && (await hasBranch($, move.to, cwd)) && !(await hasBranch($, move.from, cwd)))
+  if (!isMoved) return
+  await rekeyRun($, from, runKey(repo?.slug ?? null, move.to), repo)
+}
+
+export async function afterBash($: EngineInterface, command: string, stdout: string, move: PendingMove | null = null): Promise<void> {
+  if (move !== null) await followBranchMove($, move)
   if (!/\bgh\s+(pr|api|run)\b/.test(command)) return
   const resolved = await resolveRun($, {})
   if (resolved === null) return
@@ -228,12 +335,14 @@ export const TOOL_DESCRIPTION =
   'Records progress of the PR pipeline the pr-pipeline:run skill drives, keyed by repo and branch. ' +
   'action "start" opens a run (ticket, ticketUrl, tracker, title, repo, tier S|M|L, prUrl). ' +
   'action "stage" sets one stage (enhance, implement, pr, review, address, verify, acceptance, risk, proof) ' +
-  'to a status (running, done, failed, skipped) with a one-line summary; it also appends ' +
-  '"did" (what was done), "flag" (a warning a developer must see), "note" (a decision), ' +
-  'or a "criterion" with "met" yes|partial|no and "evidence"; "confidence" 0-100; ' +
+  'to a status (running, done, failed, skipped) with a one-line summary; "running" again on a finished stage starts its next attempt. ' +
+  'It also appends "did" (what was done), "flag" (a warning a developer must see), "note" (a decision), ' +
+  'or a "criterion" with "met" yes|partial|no and "evidence" (the same text replaces the earlier verdict); ' +
+  '"confidence" is a percentage 0-100 (92, not 0.92); ' +
   '"backend", "model" and "effort" record who ran the stage; ' +
   '"tier" at triage and "risk" low|medium|high at the merge-risk stage are kept on the run. ' +
-  'action "link" attaches a labelled URL to a stage; a PR page URL becomes the run\'s PR. ' +
+  'action "link" attaches a labelled URL to a stage; a PR page URL becomes the run\'s PR when the run has none, ' +
+  'or when linked to the pr stage from the run\'s repo. action "unlink" (stage, href) removes a link; unlinking the run\'s PR clears it. ' +
   'action "pr" returns the live PR (checks, reviews, threads) as JSON; "fresh" skips the 15 s cache. ' +
   'action "pr-reply" (threadId, body) replies to a review thread; "pr-resolve" (threadId) resolves one. ' +
   'action "settings" returns the review settings and detected tools; "set" writes settings. ' +
@@ -242,18 +351,18 @@ export const TOOL_DESCRIPTION =
 export const INPUT_SCHEMA = {
   type: 'object',
   properties: {
-    action: { type: 'string', enum: ['start', 'stage', 'link', 'status', 'pr', 'pr-reply', 'pr-resolve', 'settings', 'close'] },
+    action: { type: 'string', enum: [...ACTIONS] },
     branch: { type: 'string', description: 'Branch, or a run key owner/name#branch; defaults to the checked-out branch' },
     repo: { type: 'string', description: 'owner/name; defaults to the origin remote' },
     ticket: { type: 'string' },
     ticketUrl: { type: 'string' },
-    tracker: { type: 'string', enum: ['jira', 'github', 'linear', 'text', 'pr'] },
+    tracker: { type: 'string', enum: [...TRACKERS] },
     title: { type: 'string' },
     prUrl: { type: 'string' },
     tier: { type: 'string', enum: [...TIERS], description: 'Difficulty tier from triage' },
     risk: { type: 'string', enum: [...RISKS], description: 'Merge risk verdict' },
     stage: { type: 'string', enum: STAGES.map(stage => stage.id) },
-    status: { type: 'string', enum: ['pending', 'running', 'done', 'failed', 'skipped'] },
+    status: { type: 'string', enum: [...STATUSES] },
     summary: { type: 'string', description: 'One line shown on the stage row' },
     did: { type: 'string', description: 'One thing the stage did, for a developer skimming' },
     flag: { type: 'string', description: 'A warning the developer must see before trusting the stage' },
@@ -261,7 +370,7 @@ export const INPUT_SCHEMA = {
     criterion: { type: 'string', description: 'An acceptance criterion, with met and evidence' },
     met: { type: 'string', enum: [...METS] },
     evidence: { type: 'string', description: 'Test name, screenshot path, log line, row' },
-    confidence: { type: 'number', minimum: 0, maximum: 100 },
+    confidence: { type: 'number', minimum: 0, maximum: 100, description: 'A percentage: 92, not 0.92' },
     label: { type: 'string' },
     href: { type: 'string' },
     backend: { type: 'string', enum: [...BACKENDS], description: 'Harness that ran the stage' },

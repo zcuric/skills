@@ -15,6 +15,7 @@ const prBusy = atom({ plugin: 'pr-pipeline', key: 'prBusy' } as const, null as s
 const DEBOUNCE_MS = 15_000
 const STUCK_FETCH_MS = 45_000
 export const CLOSE_AFTER_MS = 5 * 60_000
+const OTHER_RUN_POLL_MS = 10 * 60_000
 
 const pendingRefreshes = new Map<string, { timer: Timer; dueAt: number }>()
 const rerunDone = new Set<string>()
@@ -121,17 +122,25 @@ async function closeMergedRuns($: EngineInterface, now: number): Promise<void> {
   }
 }
 
+const isPolled = (run: PipelineRun | undefined): run is PipelineRun =>
+  run?.prUrl !== undefined && run.closedAt === undefined && run.pr?.state !== 'CLOSED'
+
+/** Polls the selected run, plus the one other run whose PR was fetched longest ago, so its merge is seen and it closes. */
 export async function tick($: EngineInterface): Promise<void> {
   const now = await $.clock.now()
   await resetStuckFetches($, now)
   await closeMergedRuns($, now)
+  if ((await read($, replying)) !== null) return
   const all = await read($, runs)
   const key = pickedKey(all, await read($, selectedKey))
-  if (key === null) return
-  const run = all[key]
-  if (run?.prUrl === undefined || run.closedAt !== undefined || run.pr?.state === 'CLOSED') return
-  if ((await read($, replying)) !== null) return
-  await refreshPr($, key, { reason: 'poll' })
+  if (key !== null && isPolled(all[key])) await refreshPr($, key, { reason: 'poll' })
+  const states = await read($, prStates)
+  const fetchedAt = (run: PipelineRun): number => states[run.key]?.fetchedAt ?? run.pr?.fetchedAt ?? 0
+  const stalest = Object.values(all)
+    .filter(run => run.key !== key && run.mergedAt === undefined && isPolled(run))
+    .sort((a, b) => fetchedAt(a) - fetchedAt(b))[0]
+  if (stalest === undefined || now - fetchedAt(stalest) < OTHER_RUN_POLL_MS) return
+  await refreshPr($, stalest.key, { reason: 'poll-other' })
 }
 
 export const failedChecks = (snapshot: PrSnapshot): PrSnapshot['checks'] =>

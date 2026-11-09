@@ -46,6 +46,8 @@ export type Stage = {
   criteria: Criterion[]
   links: StageLink[]
   confidence?: number
+  /** Counts restarts: 2 after the stage ran once and was started again; absent means 1 */
+  attempt?: number
 }
 
 export type PrCheckStatus = 'queued' | 'in_progress' | 'completed' | 'pending'
@@ -156,6 +158,8 @@ export type PipelineRun = {
   /** Closed runs leave the Runs switcher; status still returns them */
   closedAt?: number
   stages: Stage[]
+  /** Set by the first start or stage write */
+  startedAt?: number
   updatedAt: number
 }
 
@@ -194,7 +198,7 @@ declare module 'claude-code' {
   }
 }
 
-export type PipelineAction = 'start' | 'stage' | 'link' | 'status' | 'pr' | 'pr-reply' | 'pr-resolve' | 'settings' | 'close'
+export type PipelineAction = 'start' | 'stage' | 'link' | 'unlink' | 'status' | 'pr' | 'pr-reply' | 'pr-resolve' | 'settings' | 'close'
 
 /** The pipeline tool this mod registers, so `e.tool === "mcp__pr-pipeline__pipeline"` narrows. */
 export type PipelineToolInput = {

@@ -417,13 +417,18 @@ function plural(count: number, noun: string): string {
   return `${count} ${noun}${count === 1 ? '' : 's'}`
 }
 
-export function mergeGuard(snapshot: PrSnapshot, gate: { approvalRequired: boolean }): { ok: true } | { ok: false; reasons: string[] } {
+export function mergeGuard(
+  snapshot: PrSnapshot,
+  gate: { approvalRequired: boolean; why?: string },
+): { ok: true } | { ok: false; reasons: string[] } {
   const { counts, mergeState, reviewDecision: decision } = snapshot
   const reasons: string[] = []
   if (snapshot.isDraft || mergeState === 'DRAFT') reasons.push('draft')
   if (snapshot.mergeable === 'CONFLICTING' || mergeState === 'DIRTY') reasons.push('merge conflicts')
   if (decision === 'CHANGES_REQUESTED') reasons.push('changes requested')
-  if (decision !== 'CHANGES_REQUESTED' && decision !== 'APPROVED' && gate.approvalRequired) reasons.push('needs approval')
+  if (decision !== 'CHANGES_REQUESTED' && decision !== 'APPROVED' && gate.approvalRequired) {
+    reasons.push(`needs a human approval${gate.why ? ` (${gate.why})` : ''} — request one on GitHub`)
+  }
   if (counts.checksFailed > 0) reasons.push(plural(counts.checksFailed, 'failing check'))
   if (counts.checksPending > 0) reasons.push(plural(counts.checksPending, 'pending check'))
   if (mergeState === 'BEHIND') reasons.push('behind base')

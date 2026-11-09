@@ -14,10 +14,11 @@ Needs the GitHub CLI (`gh`) logged in. Jira and Linear tickets need their MCP co
 
 ## What you see
 
-- **Runs switcher** with the repo and branch of every run, then the run header with ticket, tracker and repo, and the confidence and merge-risk lights.
+- **Runs switcher** with the repo, branch and current stage of every run, then the run header with ticket, tracker and repo, and the confidence and merge-risk lights. A run follows its branch through `git checkout -b`, `git switch -c` and `git branch -m`.
+- **Progress card**: stages done, when the run started and last updated, and its total time once every stage has finished. A run with a stage running and no update for 30 minutes shows "Stalled at <stage>".
 - **Pull request card**: checks, review decision and reviewers, mergeability, and the Merge button once checks, review and risk allow it.
 - **Threads card**: unresolved review threads with their diff hunk, a reply box, Resolve, and Fix (hands the thread to the pipeline).
-- **Stage rows**: open one for what the stage did, its warnings, the model that ran it, and for the acceptance stage every criterion with its evidence.
+- **Stage rows**: elapsed time, the attempt number when a stage ran again; open one for what the stage did, its warnings, the model that ran it, and for the acceptance stage every criterion with its evidence.
 
 ## Starting a run
 
@@ -37,7 +38,7 @@ At the start it asks you one question, at most, covering only what it cannot dec
 | --- | --- | --- |
 | 1 | Enhance | Reads the ticket, writes the acceptance criteria and a spec, posts the spec on the ticket, classifies the task and picks models |
 | 2 | Implement | Branches, reproduces a bug with a failing test first, implements, lints, tests, commits |
-| 3 | Create PR | Opens the PR with a skimmable body (link line, status strip, summary, one diagram, test plan), labels, assignee |
+| 3 | Create PR | Opens the PR with a skimmable body (link line, status strip, summary, one diagram, test plan) and labels |
 | 4 | AI review | Posts one review with line comments, confidence badges and an acceptance table; swaps the AI label |
 | 5 | Address | Fixes findings, replies in each thread with the commit, resolves it; re-reviews once |
 | 6 | E2E verify | A quick decision first (see below); then drives the real app: the repo's e2e skill, else a browser smoke from `.claude/launch.json`, else skipped with the reason |
@@ -66,9 +67,9 @@ Stage 1 sorts the task into a class, and the class decides which model does each
 
 Each stage row in the pane carries a chip with the model that ran it (`opus·high`, `codex·gpt-5-codex`). The start question lets you switch a run to opus everywhere.
 
-## Who gets asked to review
+## Nobody gets pinged
 
-By default (`requestReviewers: "on-risk"`) the pipeline asks the repo's reviewers only when it is worth their time: the merge risk is medium or high, the acceptance confidence is under 80%, or the AI review ended with changes requested. Then it requests them on the PR and @-mentions them in the proof comment with what to look at. Otherwise nobody is pinged, and the proof comment ends `Risk low · confidence n% · no reviewer requested; merge from the pane when checks are green.` Set `"always"` to request reviewers when the PR opens, or `"never"` to leave it to you.
+The pipeline never requests reviewers, assigns the PR, or @-mentions anyone, on the PR or on the ticket. The proof comment ends with a plain verdict instead: `Risk low · confidence n% · merge from the pane when checks are green.`, or, when the merge risk is medium or high, the confidence is under 80% or the AI review asked for changes, `needs a human look at <area>`. Who to ask is your call.
 
 ## Nothing to open on GitHub
 
@@ -82,7 +83,7 @@ The skills follow the same rule: they read checks and threads through the pane's
 
 ## When the PR merges
 
-The run closes itself five minutes after the pane sees the PR merged and leaves the Runs switcher. Press Close to put a run away sooner, merged or not.
+The run closes itself five minutes after the pane sees the PR merged and leaves the Runs switcher. Press Close to put a run away sooner, merged or not. With no open run, the pane shows the last closed one with a Reopen button.
 
 ## Reviewer backends
 
@@ -116,9 +117,6 @@ Each repo can describe its conventions in `.pr-pipeline.json` at the root (or `.
 | `titlePrefix` | `[{key}]` for Jira and Linear, none for GitHub and text | Prefix of the PR title. Empty string for none. |
 | `linkLine` | `[{key}]({url})` for Jira and Linear, `Closes #{n}` for GitHub, none for text | First line of the PR body. Empty string for none. |
 | `prBody` | `visual-pr` | `visual-pr`: status strip, summary, details, one change diagram, test plan. `plain`: link line, status strip, summary, test plan. |
-| `reviewers` | `[]` (discovery: CODEOWNERS, else frequent recent reviewers) | GitHub logins asked to review. |
-| `requestReviewers` | `on-risk` | `always`: at PR creation. `on-risk`: only on medium/high risk, confidence under 80, or AI changes requested. `never`. |
-| `assignee` | `@me` | PR assignee. Empty string for none. |
 | `labels` | every key `null` (discovery matches existing labels by name) | Label names for `typeBug`, `typeFeature`, `stateReview`, `aiChangesRequested`, `aiLgtm`, `aiVerified`, `readyToMerge`, `needsWork`. `null` skips that label. Labels are never created. |
 | `lint` | discovered from `package.json`, `composer.json`, `Makefile`, `pyproject.toml`, `Cargo.toml`, `go.mod` | Lint command run before each push. |
 | `test` | discovered, as for `lint` | Test command; narrowed to touched files where the runner allows. |
@@ -130,7 +128,7 @@ Each repo can describe its conventions in `.pr-pipeline.json` at the root (or `.
 | `criteriaDir` | `~/.claude/pipeline/{owner}-{repo}/{ticket}` | Where the run keeps acceptance criteria, the spec, review files and screenshots. Outside the checkout so worktrees and subagents share it. |
 | `mergeMethod` | the repo's allowed method, squash first | Merge method for this repo. |
 
-Discovery reads `gh repo view`, `gh label list` (matching `bug`, `feature`/`enhancement`, `review`, `ready to merge`, `needs (more) work` and the `ai: …` labels by name), `.github/CODEOWNERS` or the last 20 merged PRs' reviewers, the build files above, the repo's `.claude/skills` and `.claude/agents`, recent branch names, and the rule files.
+Discovery reads `gh repo view`, `gh label list` (matching `bug`, `feature`/`enhancement`, `review`, `ready to merge`, `needs (more) work` and the `ai: …` labels by name), the build files above, the repo's `.claude/skills` and `.claude/agents`, recent branch names, and the rule files.
 
 ## Files
 

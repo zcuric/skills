@@ -2,16 +2,16 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
 import type { PipelineOptions, PipelineRun, PipelineToolInput, PrSnapshot, PrState, RepoRef, Runs, Stage, StageId } from '../types'
-import { card, elapsed, isHuman, pill, prCard, RISK_COLOR, settingsCard, stageDetail, STATUS_COLOR, STATUS_GLYPH, submitPrompt, threadsCard } from './pane-pr'
+import { card, duration, elapsed, isHuman, pill, prCard, RISK_COLOR, settingsCard, stageDetail, STATUS_COLOR, STATUS_GLYPH, submitPrompt, threadsCard } from './pane-pr'
 import type { PaneContext, PaneEvent } from './pane-pr'
 import { failingRunIds, fixCiPrompt, prRefOf, refreshPr, syncPrompt, tick } from './pr'
 import {
   STAGES, closeRun, confidenceColor, ensureHarnesses, followStoreOnce, isOpenRun, loadRuns, modelChip, pickedKey, pipelineOptions,
-  runConfidence, stageLabel,
+  reopenRun, runConfidence, stageLabel,
 } from './runs'
 import type { Color } from './runs'
 import { ARGUMENT_HINT, classifyTicket } from './ticket'
-import { afterBash, handleTool, INPUT_SCHEMA, TOOL_DESCRIPTION } from './tool'
+import { afterBash, branchMoveBefore, handleTool, INPUT_SCHEMA, TOOL_DESCRIPTION } from './tool'
 
 const runs = atom({ plugin: 'pr-pipeline', key: 'runs' } as const, {} as Runs)
 const selectedKey = atom({ plugin: 'pr-pipeline', key: 'selectedKey' } as const, null as string | null)
@@ -24,13 +24,14 @@ const PANE = 'pr-pipeline'
 const TOOL = 'mcp__pr-pipeline__pipeline'
 const LABEL_WIDTH = Math.max(...STAGES.map(stage => stage.label.length))
 const CHANGES_REQUESTED = /changes[\s_-]*requested|request(ed|s)?[\s_-]+changes/i
+const STALL_MS = 30 * 60_000
 
 type Attention = { key: string; text: string; color: Color; onPress?: () => unknown }
 
 const unmetCount = (stage: Stage): number => stage.criteria.filter(one => one.met !== 'yes').length
 
-const requestsChanges = (stage: Stage): boolean =>
-  stage.id === 'review' && [stage.summary ?? '', ...stage.notes, ...stage.flags].some(text => CHANGES_REQUESTED.test(text))
+/** The latest outcome only: notes and flags keep earlier attempts' history. */
+const requestsChanges = (stage: Stage): boolean => stage.id === 'review' && CHANGES_REQUESTED.test(stage.summary ?? '')
 
 async function refreshIfStale($: EngineInterface): Promise<void> {
   const key = pickedKey(await read($, runs), await read($, selectedKey))
@@ -73,6 +74,16 @@ function runState(run: PipelineRun, now: number): { text: string; color: Color; 
   return { text: `${STATUS_GLYPH.pending} Next: ${stageLabel(next.id)}`, color: undefined, currentId: next.id }
 }
 
+/** `◐ AI review`, `✕ Address`, `● done` for a Runs switcher row. */
+function runBrief(run: PipelineRun, now: number): { text: string; color: Color } {
+  const state = runState(run, now)
+  const current = run.stages.find(stage => stage.id === state.currentId)
+  if (current === undefined) return { text: `${STATUS_GLYPH.done} done`, color: 'green' }
+  return { text: `${STATUS_GLYPH[current.status]} ${stageLabel(current.id)}`, color: STATUS_COLOR[current.status] }
+}
+
+const runName = (run: PipelineRun): string => run.ticket ?? run.title ?? run.branch
+
 async function renderPane($: EngineInterface, e: PaneEvent, options: PipelineOptions) {
   const els = $.ui.resolve(e)
   const { Box, Text, Button, Link } = els
@@ -84,11 +95,21 @@ async function renderPane($: EngineInterface, e: PaneEvent, options: PipelineOpt
   const openTo = (id: StageId | null) => () => update($, openStage, () => id)
 
   if (key === null || run === undefined) {
+    const last = Object.values(all)
+      .filter(one => one.closedAt !== undefined)
+      .sort((a, b) => (b.closedAt ?? 0) - (a.closedAt ?? 0))[0]
+    const lastLine = last === undefined ? '' : `${runName(last)}${last.mergedAt !== undefined ? ' merged ·' : ''} closed ${duration(now - (last.closedAt ?? now))} ago`
     return (
       <Box flexDirection="column" rowGap={1} paddingX={1} paddingY={1}>
         {card(els, 'empty', [
-          <Text key="empty:title" weight="bold">No pipeline run yet</Text>,
+          <Text key="empty:title" weight="bold">{last === undefined ? 'No pipeline run yet' : 'No open pipeline run'}</Text>,
           <Text key="empty:hint" dimColor>Type /pipeline with a ticket key (ABC-123), a GitHub issue (#123), a PR URL, or the task in words.</Text>,
+          last === undefined ? null : (
+            <Box key="empty:last" flexDirection="row" justifyContent="space-between" gap={1}>
+              <Box flexShrink={1} minWidth={0}><Text dimColor wrap="truncate-end">{lastLine}</Text></Box>
+              <Button key="empty:reopen" plain label="Reopen" onPress={() => void reopenRun($, last.key).catch(err => $.ui.toast(String(err)))} />
+            </Box>
+          ),
         ])}
       </Box>
     )
@@ -101,14 +122,18 @@ async function renderPane($: EngineInterface, e: PaneEvent, options: PipelineOpt
   const openRuns = Object.values(all).filter(isOpenRun).sort((a, b) => b.updatedAt - a.updatedAt)
   const prNumber = prRefOf(run)?.number
 
-  const switcher = openRuns.length < 2 ? null : card(els, 'runs', openRuns.map(one => (
-    <Button key={`run:${one.key}`} plain onPress={() => update($, selectedKey, () => one.key).then(openTo(null))}>
-      <Text weight={one.repo !== undefined && one.repo === cwdRepo ? 'bold' : 'regular'} dimColor={one.key !== key}>
-        {`${one.key === key ? '●' : '○'} ${one.repo ?? 'unknown'} · ${one.branch}`}
-      </Text>
-      <Text dimColor>{one.ticket ? `  ${one.ticket}` : ''}</Text>
-    </Button>
-  )), { title: 'Runs', aside: <Text size="caption" dimColor tabular>{openRuns.length}</Text>, gap: 0 })
+  const switcher = openRuns.length < 2 ? null : card(els, 'runs', openRuns.map(one => {
+    const brief = runBrief(one, now)
+    return (
+      <Button key={`run:${one.key}`} plain onPress={() => update($, selectedKey, () => one.key).then(openTo(null))}>
+        <Text weight={one.repo !== undefined && one.repo === cwdRepo ? 'bold' : 'regular'} dimColor={one.key !== key}>
+          {`${one.key === key ? '●' : '○'} ${one.repo ?? 'unknown'} · ${one.branch}`}
+        </Text>
+        <Text dimColor>{one.ticket ? `  ${one.ticket}` : ''}</Text>
+        <Text color={brief.color} dimColor={brief.color === undefined}>{`  ${brief.text}`}</Text>
+      </Button>
+    )
+  }), { title: 'Runs', aside: <Text size="caption" dimColor tabular>{openRuns.length}</Text>, gap: 0 })
 
   const closesIn = run.mergedAt === undefined ? 0 : Math.max(0, Math.ceil((run.mergedAt + 5 * 60_000 - now) / 60_000))
   const closeNow = () => void closeRun($, key).catch(err => $.ui.toast(String(err)))
@@ -142,7 +167,13 @@ async function renderPane($: EngineInterface, e: PaneEvent, options: PipelineOpt
     </Box>,
   ])
 
+  const running = run.stages.find(stage => stage.status === 'running')
+  const quietFor = now - run.updatedAt
+  const stalled: Attention[] = running !== undefined && quietFor > STALL_MS
+    ? [{ key: 'attn:stalled', text: `Stalled at ${stageLabel(running.id)} · no update ${duration(quietFor)}`, color: 'yellow', onPress: openTo(running.id) }]
+    : []
   const attention: Attention[] = [
+    ...stalled,
     ...run.stages.flatMap((stage): Attention[] => {
       const unmet = unmetCount(stage)
       const parts = [
@@ -168,6 +199,13 @@ async function renderPane($: EngineInterface, e: PaneEvent, options: PipelineOpt
   ), { color: attentionColor })
 
   const doneCount = run.stages.filter(stage => stage.status === 'done' || stage.status === 'skipped').length
+  const isFinished = run.stages.every(stage => stage.status !== 'pending' && stage.status !== 'running')
+  const lastFinish = Math.max(0, ...run.stages.map(stage => stage.finishedAt ?? 0))
+  const times = [
+    run.startedAt !== undefined ? `started ${duration(now - run.startedAt)} ago` : null,
+    `updated ${duration(now - run.updatedAt)} ago`,
+    run.startedAt !== undefined && isFinished && lastFinish > 0 ? `took ${duration(lastFinish - run.startedAt)}` : null,
+  ].filter((part): part is string => part !== null).join(' · ')
   const segment = Math.max(1, Math.min(4, Math.floor((e.props.bodyColumns - 4 - (STAGES.length - 1)) / STAGES.length)))
   const progress = card(els, 'progress', [
     <Box key="progress:state" flexDirection="row" justifyContent="space-between" gap={1}>
@@ -187,6 +225,7 @@ async function renderPane($: EngineInterface, e: PaneEvent, options: PipelineOpt
         )
       })}
     </Text>,
+    <Text key="progress:times" size="footnote" dimColor tabular>{times}</Text>,
   ])
 
   const stageRow = (stage: Stage, at: number) => {
@@ -194,7 +233,7 @@ async function renderPane($: EngineInterface, e: PaneEvent, options: PipelineOpt
     const isOpen = stage.id === open
     const isPending = stage.status === 'pending'
     const unmet = unmetCount(stage)
-    const time = stage.status === 'running' ? elapsed(stage, now) : ''
+    const time = stage.status === 'running' || stage.status === 'done' || stage.status === 'failed' ? elapsed(stage, now) : ''
     const verdict = stage.id === 'risk' ? run.risk : undefined
     const model = run.models?.[stage.id]
     const frame: Color = isOpen ? 'cyan' : stage.status === 'failed' ? 'red' : stage.status === 'running' ? 'yellow' : undefined
@@ -217,7 +256,8 @@ async function renderPane($: EngineInterface, e: PaneEvent, options: PipelineOpt
           {model !== undefined ? <Text dimColor>{modelChip(model)}</Text> : null}
           {stage.flags.length > 0 ? <Text color="yellow" tabular>⚠ {stage.flags.length}</Text> : null}
           {unmet > 0 ? <Text color="red" tabular>✗ {unmet}</Text> : null}
-          {time ? <Text color="yellow" tabular>{time}</Text> : null}
+          {(stage.attempt ?? 1) > 1 ? <Text dimColor>{`attempt ${stage.attempt}`}</Text> : null}
+          {time ? <Text color={stage.status === 'running' ? 'yellow' : undefined} dimColor={stage.status !== 'running'} tabular>{time}</Text> : null}
           {verdict ? pill(els, verdict, RISK_COLOR[verdict]) : null}
           {stage.confidence !== undefined ? pill(els, `${stage.confidence}%`, confidenceColor(stage.confidence)) : null}
           <Text color={isOpen ? 'cyan' : undefined} dimColor={!isOpen} weight="bold">{isOpen ? '▾' : '▸'}</Text>
@@ -276,12 +316,13 @@ export const register: Register = (on, rawOptions) => {
     .catch(() => ({ deny: 'pr-pipeline: recording the stage failed.' }))
 
   on('tool.call', { tool: 'Bash' }, async ($, e, next) => {
+    const move = await branchMoveBefore($, e.command).catch(() => null)
     const ran = await next(e)
     if (ran.deny !== undefined) return ran
     const stdout = typeof ran.result === 'object' && ran.result !== null && 'stdout' in ran.result
       ? String((ran.result as { stdout: unknown }).stdout)
       : ''
-    await afterBash($, e.command, stdout).catch(err => $.ui.toast(String(err)))
+    await afterBash($, e.command, stdout, move).catch(err => $.ui.toast(String(err)))
     return ran
   }).catch((_$, e, next) => next(e))
 

@@ -15,16 +15,17 @@ The pane's stage detail is what a developer reads instead of the transcript. Kee
 
 | Moment | Call |
 | --- | --- |
-| Once at the start | `{ action: "start", ticket, title, tracker, ticketUrl, repo }` (`repo` is `owner/name`; omit `ticketUrl` for text) |
-| Entering a stage | `{ action: "stage", stage, status: "running", summary, backend, model, effort }` (the chip on the stage row) |
+| Once at the start | `{ action: "start", ticket, title, tracker, ticketUrl, repo }` (`repo` is `owner/name`; omit `ticketUrl` for text). A different ticket on the same branch starts a fresh run |
+| Entering a stage | `{ action: "stage", stage, status: "running", summary, backend, model, effort }` (the chip on the stage row). Running a finished stage again starts attempt 2, 3…: its summary and confidence clear, its history stays |
 | Something the stage did (1–4 per stage) | `{ action: "stage", stage, did: "Added failing test, then fixed the validator" }` |
 | Something a developer must see before trusting the stage | `{ action: "stage", stage, flag: "Migration rewrites orders; run on staging before merge" }` |
 | A decision you made alone | `{ action: "stage", stage, note: "Reused DateRule instead of a new one" }` |
-| An acceptance criterion checked (stage 7) | `{ action: "stage", stage: "acceptance", criterion, met: "yes" \| "partial" \| "no", evidence }` |
-| A URL (PR, ticket comment, review, screenshot, artifact) | `{ action: "link", stage, label, href }` |
+| An acceptance criterion checked (stage 7) | `{ action: "stage", stage: "acceptance", criterion, met: "yes" \| "partial" \| "no", evidence }`; the same criterion text again replaces the earlier verdict |
+| A URL (PR, ticket comment, review, screenshot, artifact) | `{ action: "link", stage, label, href }`. A PR link becomes the run's PR only when the run has none, or on the `pr` stage from the run's repo |
+| A wrong link, or the wrong PR adopted | `{ action: "unlink", stage, href }`; unlinking the run's PR clears it |
 | Class and derived tier (stage 1) | add `tier: "S" \| "M" \| "L"` to the stage call; class and cost go in a `note` |
 | Merge risk verdict (stage 8) | add `risk: "low" \| "medium" \| "high"` to the stage call |
-| Leaving a stage | `status: "done" \| "failed" \| "skipped"`, one-line `summary`, `confidence` where the stage scored something |
+| Leaving a stage | `status: "done" \| "failed" \| "skipped"`, one-line `summary`, `confidence` where the stage scored something, as a percentage (`92`, not `0.92`) |
 | Settings (stage 1) | `{ action: "settings" }`; to save the stage-1 answer, `{ action: "settings", set: { reviewer, review_model, review_effort } }` |
 | PR state (after any stage that wrote to the PR, and whenever you need checks or threads) | `{ action: "pr" }`, or `{ action: "pr", fresh: true }` right after a push or a reply |
 | Answer or resolve a review thread (stage 5) | `{ action: "pr-reply", threadId, body }`, `{ action: "pr-resolve", threadId }` |
@@ -56,8 +57,6 @@ The fields and their defaults are in the plugin README ("Repo profile") and `pro
 | `branchPattern` | `{type}/{key}-{slug}` | 2 |
 | `titlePrefix`, `linkLine` | per tracker (table below) | 3 |
 | `prBody` | `visual-pr` | 3 |
-| `reviewers`, `requestReviewers` | `[]`, `on-risk` | 3, 9 |
-| `assignee` | `@me` | 3 |
 | `labels.*` | all `null` (no labels) | 3, 4, 7, 9 |
 | `lint`, `test` | discovered | 2, 5 |
 | `e2e` | `null` | 6 |
@@ -76,13 +75,12 @@ Run only when there is no profile file. Each step fills one field; a step that f
 
 - `gh repo view --json nameWithOwner,defaultBranchRef,squashMergeAllowed,rebaseMergeAllowed,mergeCommitAllowed`: repo, base branch, `mergeMethod` (squash, then rebase, then merge, the first one allowed).
 - `gh label list --json name --limit 200`, matched case-insensitively against the label name with emoji shortcodes stripped: `bug` → `typeBug`; `feature` or `enhancement` → `typeFeature`; `review` → `stateReview`; `ready to merge` → `readyToMerge`; `needs more work` or `needs work` → `needsWork`; `ai: changes requested`, `ai: lgtm`, `ai: verified` exact → the three `ai*` keys. Unmatched keys stay `null`. Never create a label.
-- Reviewers: the default owners line (`*`) of `.github/CODEOWNERS`, else the four most frequent reviewers on `gh pr list --state merged --limit 20 --json reviews`, excluding the current user (`gh api user -q .login`).
 - `lint` and `test`: `package.json` scripts (`lint`, `test`) run with the runner its lockfile names (`yarn.lock` → yarn, `pnpm-lock.yaml` → pnpm, `bun.lockb` → bun, else npm); `composer.json` scripts, prefixed `vendor/bin/sail` when `docker-compose.yml` mentions sail; `Makefile` targets `lint` and `test`; `pyproject.toml` → `ruff check .` and `pytest`; `Cargo.toml` → `cargo clippy` and `cargo test`; `go.mod` → `go vet ./...` and `go test ./...`. Join several with ` && `.
 - `e2e` = `e2e-verify` when `.claude/skills/e2e-verify/SKILL.md` exists; `securityAgent` = `security-reviewer` when `.claude/agents/security-reviewer.md` exists.
 - `branchPattern` from the last 20 head refs (`gh pr list --state all --limit 20 --json headRefName`): keep the default unless most of them share another shape (`feat/…`, `ABC-123/…`).
 - `rules`: whichever of `CLAUDE.md`, `AGENTS.md`, `.ai/rules/index.md` exist.
 
-Record what discovery found as one `note` on stage 1 (`Profile discovered: base main, squash, 3 labels matched, 2 reviewers from CODEOWNERS`). The stage-1 question offers once: "Save these conventions as .pr-pipeline.json? (Save / This run only)". On Save, write the file at the repo root and leave it untracked: never stage it, never let it enter the feature commit (`git add` named paths only). Do not offer again in the same repo once the file exists.
+Record what discovery found as one `note` on stage 1 (`Profile discovered: base main, squash, 3 labels matched`). The stage-1 question offers once: "Save these conventions as .pr-pipeline.json? (Save / This run only)". On Save, write the file at the repo root and leave it untracked: never stage it, never let it enter the feature commit (`git add` named paths only). Do not offer again in the same repo once the file exists.
 
 ### Tracker
 
@@ -164,7 +162,7 @@ The person follows the PR in the pane: its Pull request card shows checks, revie
 
 ## Labels, commits, PRs
 
-Labels come from the profile's `labels` map; a `null` or missing key means skip that label, silently. Label changes are swaps: remove the previous state label when adding the next (`gh pr edit <n> --remove-label "<old>" --add-label "<new>"`, quoting the exact name, spacing included). Commits follow the repo's own rules (the `rules` files); commits and PR bodies carry no co-author trailer and no mention of the tool that wrote them.
+Labels come from the profile's `labels` map; a `null` or missing key means skip that label, silently. Label changes are swaps: remove the previous state label when adding the next (`gh pr edit <n> --remove-label "<old>" --add-label "<new>"`, quoting the exact name, spacing included). Commits follow the repo's own rules (the `rules` files); commits and PR bodies carry no co-author trailer and no mention of the tool that wrote them. Nobody is pinged: never pass `--reviewer`, `--add-reviewer`, `--assignee` or `--add-assignee`, and never write an `@login` in a PR body, review, comment, thread reply or ticket comment.
 
 ## Stages
 
@@ -212,7 +210,7 @@ Pick the change outline the way a colleague would at a whiteboard:
 
 One view, under 25 lines. Nothing else in the body is a diagram. Keep the whole body under 1000 characters of prose; the views do not count. With `prBody: "plain"`: link line, the status strip, Summary and Test plan only.
 
-Then `gh pr edit`: `--add-assignee` the profile's `assignee` (skip when empty), the type label (`typeBug` or `typeFeature`) and `stateReview`. Add `reviewers` here only when `requestReviewers` is `always`; otherwise stage 9 decides. Link the PR to the stage (the mod also picks it up from `gh pr create` output), then `{ action: "pr" }`. Stacked or cross-repo PRs: link each.
+Then `gh pr edit`: the type label (`typeBug` or `typeFeature`) and `stateReview`. Link the PR to the stage (the mod also picks it up from `gh pr create` output), then `{ action: "pr" }`. Stacked or cross-repo PRs: link each.
 
 #### Pipeline status strip
 
@@ -280,13 +278,7 @@ Run the `pr-pipeline:risk` skill in a subagent at the route's model and effort, 
 
 Read `{ action: "pr", fresh: true }` first: a failing check is fixed (back through stage 5's push path) before the proof is posted; pending checks are named in the proof.
 
-**Reviewer gate.** Decide who is asked to review, from `requestReviewers`:
-
-- `always`: reviewers were added at stage 3; @-mention them in the proof.
-- `on-risk` (default): request the profile's `reviewers` (`gh pr edit <n> --add-reviewer a,b`) and @-mention them in the proof only when the merge risk is medium or high, or the acceptance confidence is under 80, or the AI review ended `changes requested`. Otherwise request no one.
-- `never`: request no one.
-
-Record the decision as a `note` on stage 9 (`Reviewers requested: risk medium` or `No reviewer requested: risk low, confidence 92%, review lgtm`). An empty `reviewers` list with a gate that fired is a `flag`.
+**Human look.** Decide whether the PR needs a human look: yes when the merge risk is medium or high, the acceptance confidence is under 80, or the AI review ended `changes requested`. Record it as a `note` on stage 9 (`Needs a human look: risk medium` or `No human look needed: risk low, confidence 92%, review lgtm`). The person decides who to ask; the pipeline never requests reviewers.
 
 Post one PR comment headed "Pipeline proof". A reviewer should get the state of the PR from the badges and the first table without reading further:
 
@@ -322,16 +314,16 @@ LGTM, 0 findings. Description matches the diff (92%). Reviewed by <backend> <mod
 (or, skipped: Skipped: <reason>. Decided by the e2e decision agent (sonnet, low effort).)
 (append when you overrode it: ; overridden by the conductor: <why>)
 
-<last line, from the reviewer gate>
+<last line, from the human-look decision>
 ```
 
-The last line is either `@a @b: risk medium · confidence 74%. Please look at <the area that raised the risk>.` or, when no one was requested, exactly `Risk low · confidence 92% · no reviewer requested; merge from the pane when checks are green.`
+The last line is either `Risk medium · confidence 74% · needs a human look at <the area that raised the risk>.` or exactly `Risk low · confidence 92% · merge from the pane when checks are green.`
 
 Badge colours: low/lgtm/all-met `2ea44f`, medium/partial `dbab09`, high/changes-requested/gaps `d73a4a`, counts `blue`. A skipped e2e gets a grey badge with the text `e2e-skipped`: `![e2e](https://img.shields.io/badge/e2e-skipped-9f9f9f)`. The confidence badge is the same number the status strip shows, coloured by the same thresholds. Attach screenshots with `gh pr comment <n> --body-file proof.md --attach ./after.jpg` run from `<criteriaDir>/e2e/` with relative paths, so the inline references rewrite. Refresh the status strip last, so the body, the proof comment and the pane agree. Swap labels to `aiVerified` and `readyToMerge` (a high merge risk keeps `stateReview` instead of `readyToMerge` and the comment says why).
 
-Post a short proof summary to the ticket where the tracker has comments (jira, github, linear): PR number and link, merge risk, confidence, acceptance `met/total`, review verdict, and who was asked to review. Text tracker: write it to `<criteriaDir>/proof.md`. Link the PR comment and the ticket comment to the stage, `{ action: "pr" }`, mark the stage `done` with summary `ready to merge · risk low` (or `ready for review · risk medium`).
+Post a short proof summary to the ticket where the tracker has comments (jira, github, linear): PR number and link, merge risk, confidence, acceptance `met/total`, review verdict, and whether it needs a human look. Text tracker: write it to `<criteriaDir>/proof.md`. Link the PR comment and the ticket comment to the stage, `{ action: "pr" }`, mark the stage `done` with summary `ready to merge · risk low` (or `ready for review · risk medium`).
 
-Then one short message to the person: PR #n, merge risk, confidence, who was asked to review and why (or `No reviewer requested; merge from the pane when checks are green.`), what a reviewer should focus on, anything flagged. The pane's Pull request card has the checks and the Merge button.
+Then one short message to the person: PR #n, merge risk, confidence, whether it needs a human look and why (or `Merge from the pane when checks are green.`), what a reviewer should focus on, anything flagged. The pane's Pull request card has the checks and the Merge button.
 
 ## Starting from an open PR
 

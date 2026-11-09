@@ -37,7 +37,14 @@ export function fakeProcess(on: On, table: readonly Route[]): string[][] {
   return calls
 }
 
-export type Booted = { clock: MockClock; calls: string[][]; prompts: string[]; configs: Array<{ key: string; value: unknown }>; toasts: string[] }
+export type Booted = {
+  clock: MockClock
+  calls: string[][]
+  prompts: string[]
+  configs: Array<{ key: string; value: unknown }>
+  toasts: string[]
+  statuses: Array<string | undefined>
+}
 
 export function boot(on: On, routes: readonly Route[] = [], options: { now?: number; cwd?: string } = {}): Booted {
   const clock = mock.clock(on, { now: options.now ?? 1_000_000 })
@@ -45,12 +52,16 @@ export function boot(on: On, routes: readonly Route[] = [], options: { now?: num
   const prompts: string[] = []
   const configs: Array<{ key: string; value: unknown }> = []
   const toasts: string[] = []
+  const statuses: Array<string | undefined> = []
   on('session.start', (_$, e) => ({ cwd: e.cwd }))
   on('session.cwd', () => ({ value: options.cwd ?? '/repo' }))
   on('command.register', (_$, e) => ({ value: { command: e.name } }))
   on('tool.register', (_$, e) => ({ value: { tool: `mcp__pr-pipeline__${e.name}` } }))
   on('ui.open', () => ({ value: { isPlaced: true as const } }))
-  on('ui.status', () => ({ value: undefined }))
+  on('ui.status', (_$, e) => {
+    statuses.push(e.text)
+    return { value: undefined }
+  })
   on('ui.toast', (_$, e) => {
     toasts.push(e.text)
     return { value: undefined }
@@ -64,7 +75,7 @@ export function boot(on: On, routes: readonly Route[] = [], options: { now?: num
     return { value: e.value }
   })
   const calls = fakeProcess(on, [...routes, ...REPO_ROUTES])
-  return { clock, calls, prompts, configs, toasts }
+  return { clock, calls, prompts, configs, toasts, statuses }
 }
 
 export const ran = (calls: string[][], ...prefix: string[]): string[][] =>

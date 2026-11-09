@@ -1,6 +1,6 @@
 {
   "name": "pr-pipeline",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Takes a ticket (Jira, GitHub issue, Linear, or the task in words) through nine recorded stages to a merge-ready PR, routes each stage to a model by task class, reviews with Claude, Codex or OpenCode, and shows checks, review threads and merge inside a pane so nothing needs opening on GitHub.",
   "license": "MIT",
   "author": { "name": "Zdravko Curic", "url": "https://github.com/zcuric" },
