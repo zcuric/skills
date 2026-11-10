@@ -206,9 +206,9 @@ Pick the change outline the way a colleague would at a whiteboard:
 | A new component or page | a shallow component tree, children only, ~10 lines |
 | Logic in one function | pseudocode, 5–15 lines, names from the diff |
 | A changed shape (interface, schema, request, response, enum) | a `diff` block of the shape, `-` old `+` new |
-| Three or more files that talk to each other | a `mermaid` flowchart, nodes named after files or classes |
+| A flow with a decision, a skip or a failure path | a `mermaid` `flowchart TD`, 4–10 nodes named as steps in plain domain words, `{question?}` nodes with labelled `Yes`/`No` edges |
 
-One view, under 25 lines. Nothing else in the body is a diagram. Keep the whole body under 1000 characters of prose; the views do not count. With `prBody: "plain"`: link line, the status strip, Summary and Test plan only.
+One view, under 25 lines. Nothing else in the body is a diagram. The view shows what the changed code does when it runs, so a reader who skips the diff learns the behaviour: never draw the pipeline, the review, or a map of which files changed. Keep the whole body under 1000 characters of prose; the views do not count. With `prBody: "plain"`: link line, the status strip, Summary and Test plan only.
 
 Then `gh pr edit`: the type label (`typeBug` or `typeFeature`) and `stateReview`. Link the PR to the stage (the mod also picks it up from `gh pr create` output), then `{ action: "pr" }`. Stacked or cross-repo PRs: link each.
 

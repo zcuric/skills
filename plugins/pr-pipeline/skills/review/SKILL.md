@@ -122,18 +122,30 @@ Badge colours: confidence 80 and up `2ea44f`, 60 to 79 `dbab09`, under 60 `9f9f9
 | --- | --- | --- | --- | --- |
 | 1 | `src/orders/total.ts:42` | high | 85% | Null customer breaks the total |
 
+<details open><summary><b>How the change runs</b></summary>
+
 ```mermaid
-flowchart LR
-  A[Diff] --> B{Correctness}
-  A --> C{Fits ticket}
-  A --> D{Description true}
-  B -->|1 high| E[Changes requested]
+flowchart TD
+  A[Guest submits checkout] --> B[Create order]
+  B --> C{Customer attached?}
+  C -->|Yes| D[Apply customer discount]
+  C -->|No| E["Read order.customer.discount ⚠️ #1"]
+  D --> F[Compute total]
+  E --> F
 ```
+
+</details>
 
 Reviewed by <backend> <model> at <effort> effort. Line comments carry a confidence score each; replies on the thread are read by the pipeline's address stage.
 ````
 
-Keep the mermaid block only when there are findings in more than one category; otherwise it is noise. The footer names what actually ran, after any fallback.
+The diagram is the reviewer's reading of what the changed code does at runtime, so a reader who skips the diff still learns the behaviour:
+
+- Top-down (`flowchart TD`), 4–10 nodes, each a step in plain domain words (`Queue filing after commit`, not `FileJob.php`). Name a function only when the reader needs it to find the code.
+- Show every decision the diff adds or changes as a `{question?}` node with labelled `Yes`/`No` edges, including skip, retry and failure paths.
+- Mark the node a finding lands on with `⚠️ #n`, matching the findings table.
+- Never draw the review, the pipeline, the diff or a list of files.
+- Omit the block when the change has no flow of three or more steps: a copy change, a renamed field, a config value, a pure shape change. The footer names what actually ran, after any fallback.
 
 ## Label and record
 
