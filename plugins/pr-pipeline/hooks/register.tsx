@@ -317,7 +317,7 @@ export const register: Register = (on, rawOptions) => {
   })
 
   on('tool.call', { tool: TOOL }, async ($, e) => handleTool($, e as unknown as PipelineToolInput, options))
-    .catch(() => ({ deny: 'pr-pipeline: recording the stage failed.' }))
+    .catch((_$, _e, next) => ({ deny: `pr-pipeline: recording the stage failed: ${next.error.message ?? next.error.kind}` }))
 
   on('tool.call', { tool: 'Bash' }, async ($, e, next) => {
     const move = await branchMoveBefore($, e.command).catch(() => null)

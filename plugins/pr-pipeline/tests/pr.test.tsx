@@ -143,7 +143,7 @@ test('without gh the PR card says why and stages still record', async ($, on) =>
   await $.tool.call({ tool: TOOL, action: 'start', branch: 'feature/nogh', prUrl: PR_URL })
   await $.tool.call({ tool: TOOL, action: 'pr', branch: 'feature/nogh', fresh: true })
   const recorded = await $.tool.call({ tool: TOOL, action: 'stage', branch: 'feature/nogh', stage: 'review', status: 'done', summary: 'lgtm' })
-  expect(recorded.result).toBe('Stage review done: lgtm.')
+  expect(recorded.result).toBe('Stage review done: lgtm. (no running call was recorded)')
 
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
   expect(await ui.find({ type: 'Text', text: /PR view unavailable: gh not found on PATH/ })).toBeDefined()

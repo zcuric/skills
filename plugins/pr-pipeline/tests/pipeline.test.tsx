@@ -3,8 +3,10 @@ import type { Engine } from 'claude-code/testing'
 
 import { boot, PANE, PR_URL, START, TOOL } from './kit'
 
-const runOf = async ($: Engine, branch: string) =>
-  JSON.parse(String((await $.tool.call({ tool: TOOL, action: 'status', branch })).result))
+const runOf = async ($: Engine, branch: string) => {
+  const answer = await $.tool.call({ tool: TOOL, action: 'status', branch })
+  return answer.deny !== undefined ? null : JSON.parse(String(answer.result))
+}
 
 const stageOf = async ($: Engine, branch: string, id: string) =>
   (await runOf($, branch)).stages.find((stage: { id: string }) => stage.id === id)
@@ -45,6 +47,7 @@ test('a criterion without met is refused', async ($, on) => {
   boot(on)
   mock.store(on)
   await $.session.start(START)
+  await $.tool.call({ tool: TOOL, action: 'start', branch: 'b' })
   const refused = await $.tool.call({ tool: TOOL, action: 'stage', branch: 'b', stage: 'acceptance', criterion: 'x' })
   expect(refused.deny).toMatch(/met/)
 })
@@ -74,6 +77,7 @@ test('an unknown stage is refused', async ($, on) => {
   boot(on)
   mock.store(on)
   await $.session.start(START)
+  await $.tool.call({ tool: TOOL, action: 'start', branch: 'b' })
   const refused = await $.tool.call({ tool: TOOL, action: 'stage', branch: 'b', stage: 'deploy', status: 'done' })
   expect(refused.deny).toMatch(/stage/)
 })
@@ -183,6 +187,7 @@ test('a criterion recorded again replaces its earlier verdict', async ($, on) =>
   boot(on)
   mock.store(on)
   await $.session.start(START)
+  await $.tool.call({ tool: TOOL, action: 'start', branch: 'b' })
   await $.tool.call({ tool: TOOL, action: 'stage', branch: 'b', stage: 'acceptance', criterion: 'Past dates are refused', met: 'no' })
   await $.tool.call({ tool: TOOL, action: 'stage', branch: 'b', stage: 'acceptance', criterion: 'Past dates are refused', met: 'yes', evidence: 'DueDateTest' })
   expect((await stageOf($, 'b', 'acceptance')).criteria).toEqual([{ text: 'Past dates are refused', met: 'yes', evidence: 'DueDateTest' }])
@@ -268,4 +273,69 @@ test('the status line clears when a stage fails or the run closes', async ($, on
   expect(statuses.at(-1)).toBe('pipeline: Implement')
   await $.tool.call({ tool: TOOL, action: 'close', branch: 'b' })
   expect(statuses.at(-1)).toBeUndefined()
+})
+
+test('proof cannot be done while another stage is still open', async ($, on) => {
+  boot(on)
+  mock.store(on)
+  await $.session.start(START)
+  await $.tool.call({ tool: TOOL, action: 'start', branch: 'b', ticket: 'HWEPD-45' })
+  for (const id of ['enhance', 'implement', 'pr', 'review', 'verify', 'acceptance']) {
+    await $.tool.call({ tool: TOOL, action: 'stage', branch: 'b', stage: id, status: 'skipped' })
+  }
+  await $.tool.call({ tool: TOOL, action: 'stage', branch: 'b', stage: 'address', status: 'running' })
+
+  const refused = await $.tool.call({ tool: TOOL, action: 'stage', branch: 'b', stage: 'proof', status: 'done' })
+  expect(refused.deny).toBe('pr-pipeline: proof cannot be done while these are open: address (running), risk (pending). Close or skip them first.')
+  expect((await stageOf($, 'b', 'proof')).status).toBe('pending')
+
+  await $.tool.call({ tool: TOOL, action: 'stage', branch: 'b', stage: 'address', status: 'done' })
+  await $.tool.call({ tool: TOOL, action: 'stage', branch: 'b', stage: 'risk', status: 'skipped' })
+  expect((await $.tool.call({ tool: TOOL, action: 'stage', branch: 'b', stage: 'proof', status: 'done' })).deny).toBeUndefined()
+})
+
+test('starting a stage while an earlier one is open is recorded with a warning', async ($, on) => {
+  boot(on)
+  mock.store(on)
+  await $.session.start(START)
+  await $.tool.call({ tool: TOOL, action: 'start', branch: 'b', ticket: 'HWEPD-46' })
+  await $.tool.call({ tool: TOOL, action: 'stage', branch: 'b', stage: 'enhance', status: 'skipped' })
+  await $.tool.call({ tool: TOOL, action: 'stage', branch: 'b', stage: 'pr', status: 'running' })
+
+  const started = await $.tool.call({ tool: TOOL, action: 'stage', branch: 'b', stage: 'review', status: 'running' })
+  expect(started.result).toBe('Stage review running. Still open before this: implement (pending), pr (running) — close or skip them.')
+  expect((await stageOf($, 'b', 'review')).status).toBe('running')
+})
+
+test('ending a stage that was never started stamps its start and says so', async ($, on) => {
+  const { clock } = boot(on)
+  mock.store(on)
+  await $.session.start(START)
+  await $.tool.call({ tool: TOOL, action: 'start', branch: 'b', ticket: 'HWEPD-47' })
+  await clock.advance(60_000)
+
+  const ended = await $.tool.call({ tool: TOOL, action: 'stage', branch: 'b', stage: 'enhance', status: 'done', summary: '3 criteria' })
+  expect(ended.result).toBe('Stage enhance done: 3 criteria. (no running call was recorded)')
+  const enhance = await stageOf($, 'b', 'enhance')
+  expect(enhance.startedAt).toBe(1_060_000)
+  expect(enhance.finishedAt).toBe(1_060_000)
+
+  await $.tool.call({ tool: TOOL, action: 'stage', branch: 'b', stage: 'implement', status: 'running' })
+  expect((await $.tool.call({ tool: TOOL, action: 'stage', branch: 'b', stage: 'implement', status: 'done' })).result).toBe('Stage implement done.')
+})
+
+test('a running call without a model records the session model by family name', async ($, on) => {
+  boot(on)
+  mock.store(on)
+  on('session.model', () => ({ value: 'claude-opus-5-5' }))
+  await $.session.start(START)
+  await $.tool.call({ tool: TOOL, action: 'start', branch: 'b', ticket: 'HWEPD-48' })
+  await $.tool.call({ tool: TOOL, action: 'stage', branch: 'b', stage: 'enhance', status: 'running', effort: 'high' })
+  await $.tool.call({ tool: TOOL, action: 'stage', branch: 'b', stage: 'implement', status: 'running', backend: 'claude', model: 'claude-sonnet-4-6' })
+  await $.tool.call({ tool: TOOL, action: 'stage', branch: 'b', stage: 'review', status: 'running', backend: 'codex', model: 'gpt-5-codex' })
+
+  const run = await runOf($, 'b')
+  expect(run.models.enhance).toEqual({ backend: 'claude', model: 'opus', effort: 'high' })
+  expect(run.models.implement).toEqual({ backend: 'claude', model: 'sonnet' })
+  expect(run.models.review).toEqual({ backend: 'codex', model: 'gpt-5-codex' })
 })

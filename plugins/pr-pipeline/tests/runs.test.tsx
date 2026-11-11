@@ -1,21 +1,37 @@
 import { expect, mock, test } from 'claude-code/testing'
 
 import type { Engine } from 'claude-code/testing'
+import type { On } from 'claude-code'
 
 import type { Runs } from '../types'
 import { pruneRuns } from '../hooks/runs'
+import { parseBranchMove } from '../hooks/tool'
 import { boot, PANE, PR_URL, prRoutes, prView, ran, START, TOOL } from './kit'
 import type { Route } from './kit'
 
-const status = async ($: Engine, branch: string) =>
-  JSON.parse(String((await $.tool.call({ tool: TOOL, action: 'status', branch })).result))
+const status = async ($: Engine, branch: string) => {
+  const answer = await $.tool.call({ tool: TOOL, action: 'status', branch })
+  return answer.deny !== undefined ? null : JSON.parse(String(answer.result))
+}
+
+const sharedStore = (on: On): Record<string, unknown> => {
+  const shared: Record<string, unknown> = {}
+  on('store.get', (_$, e) => ({ value: shared[e.key] }))
+  on('store.set', (_$, e) => {
+    shared[e.key] = JSON.parse(JSON.stringify(e.value))
+    return { value: undefined }
+  })
+  return shared
+}
 
 test('a run is keyed by repo and branch', async ($, on) => {
   boot(on)
   mock.store(on)
   await $.session.start(START)
   const started = await $.tool.call({ tool: TOOL, action: 'start', branch: 'feature/keyed', ticket: 'HWEPD-1' })
-  expect(started.result).toBe('Pipeline run opened for o/r#feature/keyed (HWEPD-1).')
+  expect(started.result).toBe(
+    'Pipeline run opened for o/r#feature/keyed (HWEPD-1). Run key: o/r#feature/keyed — pass it as "branch" from any other session, worktree or subagent.',
+  )
 
   const byBranch = await status($, 'feature/keyed')
   expect(byBranch.key).toBe('o/r#feature/keyed')
@@ -382,4 +398,64 @@ test('the pane has no progress card; the Stages header carries the count', async
   expect(await ui.find({ type: 'Text', text: /Running: Implement/ })).toBeUndefined()
   expect(await ui.find({ type: 'Text', text: /^1\/9 done · updated/ })).toBeDefined()
   await ui.unmount()
+})
+
+test('stage, link and status on a branch with no run are refused and create nothing', async ($, on) => {
+  boot(on)
+  const shared = sharedStore(on)
+  await $.session.start(START)
+  await $.tool.call({ tool: TOOL, action: 'start', branch: 'feature/a', ticket: 'HWEPD-35' })
+
+  const expected = 'pr-pipeline: no run for o/r#feature/none. Open runs: o/r#feature/a. Pass branch: "<run key>" or call start.'
+  const stage = await $.tool.call({ tool: TOOL, action: 'stage', branch: 'O/r#feature/none', stage: 'review', status: 'running' })
+  expect(stage.deny).toBe(expected)
+  const link = await $.tool.call({ tool: TOOL, action: 'link', branch: 'O/r#feature/none', stage: 'pr', href: PR_URL })
+  expect(link.deny).toBe(expected)
+  expect((await $.tool.call({ tool: TOOL, action: 'status', branch: 'O/r#feature/none' })).deny).toBe(expected)
+  expect(Object.keys(shared.runs as Runs)).toEqual(['o/r#feature/a'])
+})
+
+test('gh pr create in a session with no run creates none', async ($, on) => {
+  boot(on)
+  const shared = sharedStore(on)
+  on('tool.call', { tool: 'Bash' }, () => ({ result: { stdout: `${PR_URL}\n`, stderr: '', exitCode: 0 } }))
+  await $.session.start(START)
+  await $.tool.call({ tool: 'Bash', command: 'gh pr create --title t --body b' })
+
+  expect(shared.runs ?? {}).toEqual({})
+  expect((await $.tool.call({ tool: TOOL, action: 'status' })).deny).toMatch(/^pr-pipeline: no run for o\/r#feature\/current\. Open runs: none\./)
+})
+
+test('a repo that differs only by case resolves to the run or the remote it names', async ($, on) => {
+  boot(on)
+  const shared = sharedStore(on)
+  await $.session.start(START)
+  await $.tool.call({ tool: TOOL, action: 'start', branch: 'main', repo: 'Org/Api', ticket: 'API-2' })
+
+  expect((await $.tool.call({ tool: TOOL, action: 'stage', branch: 'main', repo: 'org/api', stage: 'enhance', status: 'running' })).deny).toBeUndefined()
+  expect((await $.tool.call({ tool: TOOL, action: 'stage', branch: 'ORG/API#main', stage: 'enhance', status: 'done' })).deny).toBeUndefined()
+  const started = await $.tool.call({ tool: TOOL, action: 'start', branch: 'feature/cased', repo: 'O/R', ticket: 'HWEPD-36' })
+  expect(started.result).toMatch(/^Pipeline run opened for o\/r#feature\/cased /)
+
+  expect(Object.keys(shared.runs as Runs).sort()).toEqual(['Org/Api#main', 'o/r#feature/cased'])
+  const api = await status($, 'Org/Api#main')
+  expect(api.repo).toBe('Org/Api')
+  expect(api.stages[0].status).toBe('done')
+  expect((await status($, 'feature/cased')).repo).toBe('o/r')
+})
+
+test('git worktree add -b moves the run onto the branch it creates', async ($, on) => {
+  const git = { branch: 'main' }
+  boot(on, [movingBranch(git), [['git', 'rev-parse'], { stdout: '' }]])
+  mock.store(on)
+  on('tool.call', { tool: 'Bash' }, bashThatSwitches(git, null))
+  await $.session.start(START)
+  await $.tool.call({ tool: TOOL, action: 'start', ticket: 'HWEPD-37' })
+  await $.tool.call({ tool: 'Bash', command: 'git worktree add -b feature/hwepd-37 ../wt origin/main' })
+
+  const moved = await status($, 'feature/hwepd-37')
+  expect(moved.key).toBe('o/r#feature/hwepd-37')
+  expect(moved.ticket).toBe('HWEPD-37')
+  expect(await status($, 'main')).toBeNull()
+  expect(parseBranchMove('git worktree add ../wt -B feature/x origin/main')).toEqual({ kind: 'worktree', to: 'feature/x' })
 })

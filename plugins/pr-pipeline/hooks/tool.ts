@@ -22,8 +22,9 @@ import { currentBranch, git, parsePrUrl, prPageUrl, replyToThread, resolveThread
 import { prRefOf, refreshPr, schedulePrRefresh } from './pr'
 import {
   BACKENDS, CLAUDE_MODELS, EFFORTS, STAGES, TRACKERS, changeRun, closeRun, ensureHarnesses, followStoreOnce, freshRun, isOpenRun,
-  isStageId, pipelineOptions, rekeyRun, repoFor, resolveRun, runKey, stageLabel,
+  isStageId, pipelineOptions, rekeyRun, repoFor, resolveRun, runKey, shortModel, stageLabel,
 } from './runs'
+import type { ResolvedRun } from './runs'
 
 const runs = atom({ plugin: 'pr-pipeline', key: 'runs' } as const, {} as Runs)
 const selectedKey = atom({ plugin: 'pr-pipeline', key: 'selectedKey' } as const, null as string | null)
@@ -37,7 +38,7 @@ const TIERS: readonly Tier[] = ['S', 'M', 'L']
 const RISKS: readonly Risk[] = ['low', 'medium', 'high']
 const METS: readonly Met[] = ['yes', 'partial', 'no']
 const PR_PAGE = /\/pull\/\d+\/?$/
-const BRANCH_MOVE = /\bgit\s+(checkout\s+-b|switch\s+(?:-c|--create)|branch\s+(?:-m|-M|--move))\s+([^;&|\n]+)/
+const BRANCH_MOVE = /\bgit\s+(checkout\s+-b|switch\s+(?:-c|--create)|branch\s+(?:-m|-M|--move)|worktree\s+add\b[^;&|\n]*?\s-[bB])\s+([^;&|\n]+)/
 const REFRESH_STAGES: readonly StageId[] = ['pr', 'review', 'address', 'proof']
 // Host-agnostic so GitHub Enterprise PR urls are captured too.
 const PR_URL = /https?:\/\/[^/\s]+\/[^/\s]+\/[^/\s]+\/pull\/\d+/
@@ -74,9 +75,27 @@ const stageModel = (input: PipelineToolInput, known: StageModel | undefined): St
   if (input.backend === undefined && input.model === undefined && input.effort === undefined) return known
   const backend = input.backend ?? known?.backend ?? 'claude'
   const isSameBackend = backend === known?.backend
-  const model = input.model ?? (isSameBackend ? known?.model : undefined)
+  const given = input.model ?? (isSameBackend ? known?.model : undefined)
+  const model = backend === 'claude' && given !== undefined ? shortModel(given) : given
   const effort = input.effort ?? (isSameBackend ? known?.effort : undefined)
   return { backend, ...(model !== undefined ? { model } : {}), ...(effort !== undefined ? { effort } : {}) }
+}
+
+const isOpenStage = (stage: Stage): boolean => stage.status === 'pending' || stage.status === 'running'
+
+const stageList = (stages: Stage[]): string => stages.map(stage => `${stage.id} (${stage.status})`).join(', ')
+
+const noRunText = (key: string, all: Runs): string => {
+  const open = Object.values(all).filter(isOpenRun).map(run => run.key)
+  return `no run for ${key}. Open runs: ${open.length > 0 ? open.join(', ') : 'none'}. Pass branch: "<run key>" or call start.`
+}
+
+/** The session's model for a claude `running` call that names none; the engine has no session effort to read. */
+async function withSessionModel($: EngineInterface, input: PipelineToolInput): Promise<PipelineToolInput> {
+  if (input.status !== 'running' || input.model !== undefined || (input.backend ?? 'claude') !== 'claude') return input
+  const model = await $.session.model().catch(() => undefined)
+  if (model === undefined || model === '') return input
+  return { ...input, backend: 'claude', model }
 }
 
 const isValidSetting = (field: string, value: unknown, options: PipelineOptions): boolean => {
@@ -130,12 +149,14 @@ export async function handleTool($: EngineInterface, input: PipelineToolInput, o
   if (resolved === null) return deny('no branch given and none checked out.')
   const { key } = resolved
   await followStoreOnce($)
-  const before = (await read($, runs))[key]
+  const all = await read($, runs)
+  const before = all[key]
   const now = await $.clock.now()
 
-  if (input.action === 'status') return { result: JSON.stringify(before ?? null) }
+  if (input.action === 'start') return startAnswer($, input, resolved, before, now)
+  if (before === undefined) return deny(noRunText(key, all))
+  if (input.action === 'status') return { result: JSON.stringify(before) }
   if (input.action === 'close') {
-    if (before === undefined) return deny(`no run for ${key}.`)
     await closeRun($, key)
     return { result: `Run ${before.ticket ?? key} closed.` }
   }
@@ -147,31 +168,6 @@ export async function handleTool($: EngineInterface, input: PipelineToolInput, o
   if (input.action === 'pr-reply' || input.action === 'pr-resolve') return threadAnswer($, input, key)
 
   const prUrl = repairedPrUrl(input.prUrl)
-  if (input.action === 'start') {
-    const isNewTicket = before?.ticket !== undefined && input.ticket !== undefined && input.ticket !== before.ticket
-    // Starting a closed run reopens it; a merged PR closes it again five minutes after the next fetch.
-    const run = await changeRun($, key, ({ closedAt: _closedAt, mergedAt: _mergedAt, ...kept }) => {
-      const existing = isNewTicket ? freshRun(key, now) : kept
-      return {
-        ...existing,
-        ticket: input.ticket ?? existing.ticket,
-        ticketUrl: input.ticketUrl ?? existing.ticketUrl,
-        tracker: input.tracker ?? existing.tracker,
-        title: input.title ?? existing.title,
-        prUrl: prUrl ?? repairedPrUrl(existing.prUrl) ?? existing.prUrl,
-        tier: input.tier ?? existing.tier,
-        repo: input.repo ?? existing.repo ?? resolved.repo?.slug,
-        host: existing.host ?? resolved.repo?.host,
-        cwd: resolved.cwd,
-      }
-    })
-    if (isNewTicket) await update($, prStates, all => Object.fromEntries(Object.entries(all).filter(([known]) => known !== key)))
-    await update($, selectedKey, () => key)
-    await update($, openStage, () => null)
-    if (run.prUrl !== before?.prUrl) await schedulePrRefresh($, key, 2_000)
-    return { result: `Pipeline run opened for ${key}${run.ticket ? ` (${run.ticket})` : ''}.` }
-  }
-
   if (!isStageId(input.stage)) return deny(`"stage" must be one of ${STAGES.map(s => s.id).join(', ')}.`)
   const stageId = input.stage
 
@@ -192,6 +188,11 @@ export async function handleTool($: EngineInterface, input: PipelineToolInput, o
 
   if (input.action === 'unlink') return unlinkAnswer($, input, key, stageId, before)
 
+  if (stageId === 'proof' && input.status === 'done') {
+    const blocking = before.stages.filter(stage => stage.id !== 'proof' && isOpenStage(stage))
+    if (blocking.length > 0) return deny(`proof cannot be done while these are open: ${stageList(blocking)}. Close or skip them first.`)
+  }
+
   if (input.criterion !== undefined && (input.met === undefined || !METS.includes(input.met))) {
     return deny('a "criterion" needs "met" yes, partial or no.')
   }
@@ -199,10 +200,15 @@ export async function handleTool($: EngineInterface, input: PipelineToolInput, o
   const criterion: Criterion | undefined = input.criterion !== undefined && input.met !== undefined
     ? { text: input.criterion, met: input.met, ...(input.evidence !== undefined ? { evidence: input.evidence } : {}) }
     : undefined
-  const beforeStatus = before?.stages.find(stage => stage.id === stageId)?.status
+  const beforeStatus = before.stages.find(stage => stage.id === stageId)?.status
+  const stillOpen = status === 'running'
+    ? before.stages.slice(0, STAGES.findIndex(meta => meta.id === stageId)).filter(isOpenStage)
+    : []
+  const stamped = await withSessionModel($, input)
+  let isUnstartedEnd = false
 
   const run = await changeRun($, key, existing => {
-    const model = stageModel(input, existing.models?.[stageId])
+    const model = stageModel(stamped, existing.models?.[stageId])
     const restarted = (stage: Stage): Stage =>
       ({ ...stage, summary: undefined, confidence: undefined, finishedAt: undefined, attempt: (stage.attempt ?? 1) + 1 })
     return withStage({
@@ -217,10 +223,11 @@ export async function handleTool($: EngineInterface, input: PipelineToolInput, o
       const isRestart = isStarting && (current.status !== 'pending' || current.startedAt !== undefined)
       const isEnding = status !== undefined && status !== current.status && ENDINGS.includes(status)
       const stage = isRestart ? restarted(current) : current
+      isUnstartedEnd = (status === 'done' || status === 'skipped') && stage.startedAt === undefined
       return {
         ...stage,
         status: status ?? stage.status,
-        startedAt: isStarting ? now : stage.startedAt,
+        startedAt: isStarting || isUnstartedEnd ? now : stage.startedAt,
         finishedAt: isEnding ? now : status !== undefined && !ENDINGS.includes(status) ? undefined : stage.finishedAt,
         summary: input.summary ?? stage.summary,
         confidence: input.confidence ?? stage.confidence,
@@ -245,7 +252,47 @@ export async function handleTool($: EngineInterface, input: PipelineToolInput, o
 
   const appended = [input.did && 'did', input.flag && 'flag', input.note && 'note', criterion && 'criterion'].filter(Boolean)
   const tail = appended.length > 0 ? ` (+${appended.join(', ')})` : ''
-  return { result: `Stage ${stageId} ${status ?? 'updated'}${input.summary ? `: ${input.summary}` : ''}${tail}.` }
+  const warnings = [
+    isUnstartedEnd ? '(no running call was recorded)' : null,
+    stillOpen.length > 0 ? `Still open before this: ${stageList(stillOpen)} — close or skip them.` : null,
+  ].filter((line): line is string => line !== null)
+  return { result: [`Stage ${stageId} ${status ?? 'updated'}${input.summary ? `: ${input.summary}` : ''}${tail}.`, ...warnings].join(' ') }
+}
+
+async function startAnswer(
+  $: EngineInterface,
+  input: PipelineToolInput,
+  resolved: ResolvedRun,
+  before: PipelineRun | undefined,
+  now: number,
+): Promise<ToolAnswer> {
+  const { key } = resolved
+  const prUrl = repairedPrUrl(input.prUrl)
+  const isNewTicket = before?.ticket !== undefined && input.ticket !== undefined && input.ticket !== before.ticket
+  // Starting a closed run reopens it; a merged PR closes it again five minutes after the next fetch.
+  const run = await changeRun($, key, ({ closedAt: _closedAt, mergedAt: _mergedAt, ...kept }) => {
+    const existing = isNewTicket ? freshRun(key, now) : kept
+    return {
+      ...existing,
+      ticket: input.ticket ?? existing.ticket,
+      ticketUrl: input.ticketUrl ?? existing.ticketUrl,
+      tracker: input.tracker ?? existing.tracker,
+      title: input.title ?? existing.title,
+      prUrl: prUrl ?? repairedPrUrl(existing.prUrl) ?? existing.prUrl,
+      tier: input.tier ?? existing.tier,
+      repo: (input.repo ? resolved.repo?.slug : undefined) ?? existing.repo ?? resolved.repo?.slug,
+      host: existing.host ?? resolved.repo?.host,
+      cwd: resolved.cwd,
+    }
+  }, { create: true })
+  if (isNewTicket) await update($, prStates, all => Object.fromEntries(Object.entries(all).filter(([known]) => known !== key)))
+  await update($, selectedKey, () => key)
+  await update($, openStage, () => null)
+  if (run.prUrl !== before?.prUrl) await schedulePrRefresh($, key, 2_000)
+  return {
+    result: `Pipeline run opened for ${key}${run.ticket ? ` (${run.ticket})` : ''}. ` +
+      `Run key: ${key} — pass it as "branch" from any other session, worktree or subagent.`,
+  }
 }
 
 async function unlinkAnswer(
@@ -253,10 +300,9 @@ async function unlinkAnswer(
   input: PipelineToolInput,
   key: string,
   stageId: StageId,
-  before: PipelineRun | undefined,
+  before: PipelineRun,
 ): Promise<ToolAnswer> {
   if (!input.href) return deny('"unlink" needs href.')
-  if (before === undefined) return deny(`no run for ${key}.`)
   const href = input.href
   const isRunPr = before.prUrl !== undefined && (href === before.prUrl || (PR_PAGE.test(href) && repairedPrUrl(href) === before.prUrl))
   const isLinked = before.stages.some(stage => stage.id === stageId && stage.links.some(link => link.href === href))
@@ -270,13 +316,13 @@ async function unlinkAnswer(
   return { result: `Unlinked ${href} from ${stageId}${isRunPr ? '; the run has no PR now' : ''}.` }
 }
 
-export type BranchMove = { kind: 'create' | 'rename'; from?: string; to: string }
+export type BranchMove = { kind: 'create' | 'rename' | 'worktree'; from?: string; to: string }
 
-/** `git checkout -b new`, `git switch -c new`, `git branch -m [old] new`; null for anything else. */
+/** `git checkout -b new`, `git switch -c new`, `git branch -m [old] new`, `git worktree add -b new path`; null for anything else. */
 export const parseBranchMove = (command: string): BranchMove | null => {
   const match = command.match(BRANCH_MOVE)
   if (match === null) return null
-  const kind = match[1]?.startsWith('branch') ? 'rename' : 'create'
+  const kind = match[1]?.startsWith('branch') ? 'rename' : match[1]?.startsWith('worktree') ? 'worktree' : 'create'
   const names = (match[2] ?? '').trim().split(/\s+/).filter(word => word !== '' && !word.startsWith('-')).map(word => word.replace(/^['"]|['"]$/g, ''))
   const [first, second] = names
   if (first === undefined) return null
@@ -307,9 +353,11 @@ async function followBranchMove($: EngineInterface, move: PendingMove): Promise<
   const run = (await read($, runs))[from]
   if (run === undefined || !isOpenRun(run) || run.branch !== move.from) return
   if (run.cwd !== undefined && run.cwd !== cwd) return
-  if (move.kind === 'create' && run.prUrl !== undefined) return
-  const isMoved = (await currentBranch($, cwd)) === move.to ||
-    (move.kind === 'rename' && (await hasBranch($, move.to, cwd)) && !(await hasBranch($, move.from, cwd)))
+  if (move.kind !== 'rename' && run.prUrl !== undefined) return
+  const isMoved = move.kind === 'worktree'
+    ? await hasBranch($, move.to, cwd)
+    : (await currentBranch($, cwd)) === move.to ||
+      (move.kind === 'rename' && (await hasBranch($, move.to, cwd)) && !(await hasBranch($, move.from, cwd)))
   if (!isMoved) return
   await rekeyRun($, from, runKey(repo?.slug ?? null, move.to), repo)
 }
@@ -325,7 +373,7 @@ export async function afterBash($: EngineInterface, command: string, stdout: str
   if (created !== null) {
     const prUrl = prPageUrl(created)
     const known = (await read($, runs))[resolved.key]
-    if (known?.closedAt !== undefined) return
+    if (known === undefined || known.closedAt !== undefined) return
     await changeRun($, resolved.key, existing =>
       withStage({ ...existing, prUrl }, 'pr', stage => withLink(stage, { label: 'Pull request', href: prUrl })))
   }
@@ -347,7 +395,8 @@ export const TOOL_DESCRIPTION =
   'action "pr" returns the live PR (checks, reviews, threads) as JSON; "fresh" skips the 15 s cache. ' +
   'action "pr-reply" (threadId, body) replies to a review thread; "pr-resolve" (threadId) resolves one. ' +
   'action "settings" returns the review settings and detected tools; "set" writes settings. ' +
-  'action "close" closes the run. action "status" returns the run as JSON.'
+  'action "close" closes the run. action "status" returns the run as JSON. ' +
+  'Only "start" creates a run; every other action needs one, and "proof" cannot be done while another stage is pending or running.'
 
 export const INPUT_SCHEMA = {
   type: 'object',

@@ -119,6 +119,14 @@ export async function repoFor($: EngineInterface, cwd: string): Promise<RepoRef 
   return found
 }
 
+/** The casing of a run key already stored, else of the origin remote, for a slug that differs only by case. */
+const canonicalSlug = (slug: string, all: Runs, detected: RepoRef | null): string => {
+  const lower = slug.toLowerCase()
+  const known = Object.keys(all).map(repoOfKey).find(one => one?.toLowerCase() === lower)
+  if (known !== undefined) return known
+  return detected?.slug.toLowerCase() === lower ? detected.slug : slug
+}
+
 export type ResolvedRun = { key: string; repo: RepoRef | null; cwd: string }
 
 export async function resolveRun(
@@ -129,13 +137,13 @@ export async function resolveRun(
   const all = await read($, runs)
   const cwd = await $.session.cwd()
   const detected = await repoFor($, cwd)
-  const repo = input.repo !== undefined && input.repo !== '' ? { host: detected?.host ?? 'github.com', slug: input.repo } : detected
+  const repo = input.repo !== undefined && input.repo !== '' ? { host: detected?.host ?? 'github.com', slug: canonicalSlug(input.repo, all, detected) } : detected
   if (input.branch !== undefined && all[input.branch] !== undefined && all[input.branch]?.key === input.branch && input.branch.includes('#')) {
     return { key: input.branch, repo, cwd }
   }
   const keyed = input.branch?.match(RUN_KEY)
   if (keyed?.[1] !== undefined && keyed[2] !== undefined) {
-    const slug = keyed[1]
+    const slug = canonicalSlug(keyed[1], all, detected)
     return { key: runKey(slug, keyed[2]), repo: { host: detected?.host ?? 'github.com', slug }, cwd }
   }
   const branch = input.branch ?? (await currentBranch($, cwd))
@@ -173,19 +181,21 @@ export async function changeRun(
   $: EngineInterface,
   key: string,
   fn: (run: PipelineRun) => PipelineRun,
-  options: { touch?: boolean } = {},
+  options: { touch?: boolean; create?: boolean } = {},
 ): Promise<PipelineRun> {
   await followStoreOnce($)
   const now = await $.clock.now()
   let changed: PipelineRun | undefined
   await update($, runs, all => {
+    if (all[key] === undefined && options.create !== true) return all
     const existing = all[key] !== undefined ? normaliseRun(all[key], key) : freshRun(key, now)
     const next = fn(existing)
     changed = options.touch === false ? next : { ...next, startedAt: next.startedAt ?? now, updatedAt: now }
     return { ...all, [key]: changed }
   })
+  if (changed === undefined) throw new Error(`no run for ${key}`)
   await persist($)
-  return changed as PipelineRun
+  return changed
 }
 
 /** Moves the selection off a closed run, to the most recently updated open one. */
@@ -270,6 +280,10 @@ export const pipelineOptions = (raw: PluginOptions | Partial<PipelineOptions>): 
   tracker: pickOption(raw.tracker, TRACKER_SETTINGS, 'auto'),
   merge_method: pickOption(raw.merge_method, MERGE_METHODS, 'squash'),
 })
+
+/** `claude-opus-5-5` → `opus`, so one run never mixes full ids and family names. */
+export const shortModel = (model: string): string =>
+  CLAUDE_MODELS.find(family => model.toLowerCase().includes(family)) ?? model
 
 /** `opus·low` on the claude backend, `codex·gpt-5-codex` for another backend. */
 export const modelChip = (model: StageModel): string =>

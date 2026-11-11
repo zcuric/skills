@@ -41,14 +41,14 @@ At the start it asks you one question, at most, covering only what it cannot dec
 | 3 | Create PR | Opens the PR with a skimmable body (link line, status strip, summary, one diagram, test plan) and labels |
 | 4 | AI review | Posts one review: a one-line verdict and a line comment per confirmed defect; swaps the AI label |
 | 5 | Address | Fixes findings, replies in each thread with the commit, resolves it; re-reviews once |
-| 6 | E2E verify | A quick decision first (see below); then drives the real app: the repo's e2e skill, else a browser smoke from `.claude/launch.json`, else skipped with the reason |
+| 6 | E2E verify | A quick check first (see below); then drives the real app: the repo's e2e skill, else a browser smoke from `.claude/launch.json`, else skipped with the reason |
 | 7 | Acceptance | Checks every criterion with evidence (test, screenshot, log line); a gap loops back to stage 2 once |
 | 8 | Merge risk | Verdicts on alignment, impact, verification, rollback cost, error detection, and an overall low / medium / high |
 | 9 | Final proof | One evidence-only PR comment, a summary on the ticket, and the decision on who reviews |
 
 ### When e2e is skipped
 
-Not every change needs the running app. Before stage 6 starts, a small decision agent (sonnet at low effort) looks at the task class, the acceptance criteria, the changed files and the repo's `e2ePolicy`. It runs e2e when a criterion names UI, a user flow, an integration, a job, a webhook or a sibling repo, or the work is a feature, business logic, architecture or sensitive. It skips e2e for copy, formatting, CSS-only tweaks, link changes, docs, infra, config and env changes, CI and dependency bumps. The pipeline can overrule it, but has to write down why. The reason shows in the stage row in the pane (`Skipped by claude·sonnet·low: …`) and in the e2e slot of the PR's status strip (`e2e: skipped · <reason>`). To force e2e, set `"e2ePolicy": "always"` in the repo profile, or say "run e2e" in your answer to the start question.
+Not every change needs the running app. Before stage 6 starts, the pipeline checks the repo's `e2ePolicy`, then the changed files and the acceptance criteria. It skips e2e only when every changed file is copy, style, docs, config, CI or a dependency manifest and no criterion needs the running stack; otherwise it runs. The reason shows on the stage row in the pane (`Skipped: <reason>`) and in the e2e slot of the PR's status strip (`e2e: skipped · <reason>`). To force e2e, set `"e2ePolicy": "always"` in the repo profile, or say "run e2e" in your answer to the start question.
 
 ## What it costs
 
@@ -121,7 +121,7 @@ Each repo can describe its conventions in `.pr-pipeline.json` at the root (or `.
 | `lint` | discovered from `package.json`, `composer.json`, `Makefile`, `pyproject.toml`, `Cargo.toml`, `go.mod` | Lint command run before each push. |
 | `test` | discovered, as for `lint` | Test command; narrowed to touched files where the runner allows. |
 | `e2e` | `null` (`e2e-verify` when the repo has that skill) | Skill that drives the real stack at stage 6. Without one, a browser smoke from `.claude/launch.json`. |
-| `e2ePolicy` | `auto` | Whether stage 6 runs. `auto`: the e2e decision agent decides from the class, the criteria and the changed files. `always`: every run. `never`: never. |
+| `e2ePolicy` | `auto` | Whether stage 6 runs. `auto`: runs unless every changed file is copy, style, docs, config, CI or a manifest and no criterion needs the running stack. `always`: every run. `never`: never. |
 | `securityAgent` | `null` (`security-reviewer` when the repo has that agent) | Agent for the security pass on sensitive work, when the review backend is claude. Otherwise the plugin's own security prompt. |
 | `siblings` | `[]` | Related repos as `{ name, path, contracts }`. Cross-repo work branches there too; `contracts: true` marks the repo that owns shared data contracts. |
 | `rules` | whichever of `CLAUDE.md`, `AGENTS.md`, `.ai/rules/index.md` exist | Files the implementer and the reviewer must follow. |
