@@ -69,24 +69,26 @@ Classify the ticket into one class. Check `sensitive` first: any one signal make
 
 Routing, all claude unless the review backend is set to another harness (then the review column uses `review_model` and the effort mapped to that backend):
 
-| Class | 2 Implement | 4 Review | 6 E2E | 8 Risk |
-| --- | --- | --- | --- | --- |
-| copy | haiku · low, subagent | haiku · low | sonnet · low, if 6a runs it (rarely) | haiku · low |
-| style | sonnet · low, subagent | sonnet · low | sonnet · low, session, screenshots | haiku · low |
-| quick-fix | sonnet · low, subagent | sonnet · medium | sonnet · low | sonnet · low |
-| feature | opus · low, session | opus · low | opus · low, session | sonnet · medium |
-| query-perf | opus · low, session | opus · high | opus · low, with a measurement lane | opus · low |
-| business-logic | opus · high, session | opus · high | opus · low | opus · high |
-| architecture | opus · high, session | opus · high | opus · low | opus · high |
-| sensitive | opus · high, session | opus · high, plus a security pass | opus · high, every lane | opus · high |
+| Class | 2 Implement | 4 Review | 6 E2E | 7 Check | 8 Risk |
+| --- | --- | --- | --- | --- | --- |
+| copy | haiku · low, subagent | haiku · low | sonnet · low, if 6a runs it (rarely) | haiku · low | haiku · low |
+| style | sonnet · low, subagent | sonnet · low | sonnet · low, session, screenshots | sonnet · low | haiku · low |
+| quick-fix | sonnet · low, subagent | sonnet · medium | sonnet · low | sonnet · low | sonnet · low |
+| feature | opus · low, session | opus · low | opus · low, session | sonnet · medium | sonnet · medium |
+| query-perf | opus · low, session | opus · high | opus · low, with a measurement lane | sonnet · medium | opus · low |
+| business-logic | opus · high, session | opus · high | opus · low | opus · low | opus · high |
+| architecture | opus · high, session | opus · high | opus · low | opus · low | opus · high |
+| sensitive | opus · high, session | opus · high, plus a security pass | opus · high, every lane | opus · high | opus · high |
 
-The E2E column is the model that drives the run when stage 6a decides to run it; whether it runs at all is 6a's call, for every class. Stages 1, 3, 5, 7 and 9 run here on this session's model.
+The E2E column is the model that drives the run when stage 6a decides to run it; whether it runs at all is 6a's call, for every class. The Check column is stage 7's independent acceptance check. Stages 1, 3, 5 and 9, and the rest of stage 7, run here on this session's model.
 
 Derived tier: cheap → S, mid → M, high → L. Record it with `tier` on the stage-1 call and the class as a `note`: `Class: quick-fix · cost cheap · one validator, one test`. The stage-1 question offers "Models: as routed / opus everywhere" for this run; opus everywhere keeps each lane's routed effort and swaps the model. Record the choice as a `note`.
 
 ### The stage-1 question
 
-One `AskUserQuestion` call, at most four questions, asked after the ticket is read and classified so the person sees the route. Include only what applies, in this order: open gaps in the ticket that block implementation; the tracker when a bare key matches both Jira and Linear; the review backend (above); "Models: as routed / opus everywhere"; "Save these conventions as .pr-pipeline.json? (Save / This run only)" when the profile `source` is `discovered`. Anything that does not fit takes its default with a `note`. In the CLI under `-p` or on an event-driven turn, ask nothing: take the defaults and note them. Decide what the question did not cover the way a careful colleague would and record each decision as a `note`.
+One `AskUserQuestion` call, at most four questions, asked after the ticket is read and classified so the person sees the route. Include only what applies, in this order: open gaps in the ticket that block implementation; the spec check when it is due (below); the tracker when a bare key matches both Jira and Linear; the review backend (above); "Models: as routed / opus everywhere"; "Save these conventions as .pr-pipeline.json? (Save / This run only)" when the profile `source` is `discovered`. Anything that does not fit takes its default with a `note`. In the CLI under `-p` or on an event-driven turn, ask nothing: take the defaults and note them. Decide what the question did not cover the way a careful colleague would and record each decision as a `note`.
+
+**Spec check.** A wrong spec costs the whole run, so a person confirms it before stage 2 when the class is cost high (sensitive, architecture, business-logic), or when it is cost mid and a criterion is `(derived)` or a Decision marked `(assumed)` changes what gets built. Cheap classes never stop for it. Show the draft's Goal, Expected and Acceptance criteria in a short message, then put `Spec: Build it / Stop here` in the question; free text through Other is a correction to fold into the spec. On Stop here: write and post the spec as in step 6, so the ticket can be fixed against it, close stage 1 `failed` with summary `Stopped at the spec` and end the turn; `/pipeline` on the ticket again starts over. When nothing can be asked, go on and record `flag: "Spec not confirmed by a person"`.
 
 ## Where stages run
 
@@ -108,6 +110,8 @@ The person follows the PR in the pane: its Pull request card shows checks, revie
 
 ## Stages
 
+The stages run in number order, with one exception: 4 and 6 start together. The review and the first e2e pass read the same head and neither changes it, so the review does not wait for the slowest stage. Stage 5 starts when both have reported.
+
 ### 1. Enhance
 
 The spec this stage writes is the brief every later stage works from, so the order matters:
@@ -116,7 +120,7 @@ The spec this stage writes is the brief every later stage works from, so the ord
 2. Read `spec-format.md` from this skill's directory, then read around the ticket as it says: comments, linked and parent tickets, attachments, and the code the change will touch.
 3. Extract the acceptance criteria word for word into `<criteriaDir>/acceptance.md`, one checkbox per criterion. Where the ticket has none, derive them from the description and comments, mark each `(derived)` and `flag` it.
 4. Classify the ticket and draft the spec in the format `spec-format.md` gives.
-5. Ask the stage-1 question and fold its answers into the spec's Decisions.
+5. Ask the stage-1 question, with the spec check when it is due, and fold the answers into the spec's Decisions.
 6. Write the spec to `<criteriaDir>/spec.md`, for every tracker: it is the file the stage-2 brief points at. Then post the same text as a ticket comment headed "Pipeline spec" (the text tracker has no comment) and `link` the comment to the stage.
 7. Record the stage `done` with `tier`, the class `note`, and confidence: how complete the criteria are (100 when the ticket had explicit, testable criteria).
 
@@ -145,15 +149,15 @@ Example after stage 9: `🟡 Merge risk: medium · Review: lgtm · Acceptance: 6
 
 ### 4. AI review
 
-Run the `pr-pipeline:review` skill with the run key, the class (so a sensitive diff gets the security pass), the backend from setup and the route's model and effort. It posts the review, swaps the label and records stage `review` itself; do not record the stage again. Verified findings under 60 land in `<criteriaDir>/review-held.json` with no thread; stage 5 fixes them. Read the verdict back with `{ action: "status" }` and refresh the status strip.
+Make the 6a decision first and, when e2e runs, start 6b in the background before the review. Then run the `pr-pipeline:review` skill with the run key, the class (so a sensitive diff gets the security pass), the backend from setup and the route's model and effort. It posts the review, swaps the label and records stage `review` itself; do not record the stage again. Verified findings under 60 land in `<criteriaDir>/review-held.json` with no thread; stage 5 fixes them. Read the verdict back with `{ action: "status" }` and refresh the status strip.
 
 ### 5. Address
 
-Read the threads with `{ action: "pr", fresh: true }`: every thread in `pr.threads` with `isResolved` false. For each AI thread: fix it, commit, push, then `pr-reply` and `pr-resolve`; a finding with an `Also at` line is fixed at every place it names. The reply body is `Fixed in <sha>.`, plus one sentence only when the fix differs from what the comment asked; no test names, no restating the diff. When you disagree, reply with the reason in one sentence, resolve the thread and record a `flag`, so a person sees a finding was turned down. A `[pre-existing]` finding is fixed when the fix is a few lines in a file the PR already changes; otherwise reply `Pre-existing; not changed in this PR.`, resolve, and record a `note` a person can turn into a ticket. No AI thread stays open: each ends fixed, or resolved with a reason. Record each as a `did` that ends with what happened, since this is how the reviewer's noise gets measured: `src/orders/total.ts:42 · fixed`, `· rejected: wrong`, `· rejected: intentional`, `· left: pre-existing`; the stage summary counts them (`4 fixed · 1 rejected`). A finding that a line in the repo's rule files or `REVIEW.md`, or a lint rule, would have prevented gets a `note`: `Prevent at source: <the rule> in <file>`; do not edit those files in this PR. Fix the held findings in `<criteriaDir>/review-held.json` too, without a thread, each a `did`. A thread from a person that appears during the run is answered the same way, and flagged so the person sees it was handled. Run `lint` and the touched tests before the push. End with `{ action: "pr", fresh: true }` and handle failing checks and a `BEHIND` base as in "The PR, labels and commits". When the review's summary is `lgtm` with no findings and no `held` count (and `review-held.json` is absent or empty) and no human threads are open, mark this stage `skipped`.
+Start once the review is posted and 6b has reported; its result arrives as a notification, so do not poll for it. Defects e2e found are not fixed here: they go back to the e2e run in 6c, after this stage's push. Read the threads with `{ action: "pr", fresh: true }`: every thread in `pr.threads` with `isResolved` false. For each AI thread: fix it, commit, push, then `pr-reply` and `pr-resolve`; a finding with an `Also at` line is fixed at every place it names. The reply body is `Fixed in <sha>.`, plus one sentence only when the fix differs from what the comment asked; no test names, no restating the diff. When you disagree, reply with the reason in one sentence, resolve the thread and record a `flag`, so a person sees a finding was turned down. A `[pre-existing]` finding is fixed when the fix is a few lines in a file the PR already changes; otherwise reply `Pre-existing; not changed in this PR.`, resolve, and record a `note` a person can turn into a ticket. No AI thread stays open: each ends fixed, or resolved with a reason. Record each as a `did` that ends with what happened, since this is how the reviewer's noise gets measured: `src/orders/total.ts:42 · fixed`, `· rejected: wrong`, `· rejected: intentional`, `· left: pre-existing`; the stage summary counts them (`4 fixed · 1 rejected`). A finding that a line in the repo's rule files or `REVIEW.md`, or a lint rule, would have prevented gets a `note`: `Prevent at source: <the rule> in <file>`; do not edit those files in this PR. Fix the held findings in `<criteriaDir>/review-held.json` too, without a thread, each a `did`. A thread from a person that appears during the run is answered the same way, and flagged so the person sees it was handled. Run `lint` and the touched tests before the push. End with `{ action: "pr", fresh: true }` and handle failing checks and a `BEHIND` base as in "The PR, labels and commits". When the review's summary is `lgtm` with no findings and no `held` count (and `review-held.json` is absent or empty) and no human threads are open, mark this stage `skipped`.
 
 ### 6. E2E verify
 
-**6a. Decision.** The conductor decides, before anything starts, whether e2e runs:
+**6a. Decision.** Right after stage 3, before the review starts, the conductor decides whether e2e runs:
 
 - `e2ePolicy: "always"` runs it, `"never"` skips it. The person saying "run e2e" or "skip e2e" in the stage-1 answer counts the same for this run.
 - Otherwise skip only when every changed file (`git diff --name-only $BASE...HEAD`) is copy, style, docs, config, CI or a dependency manifest and no acceptance criterion needs the running stack. Run in every other case.
@@ -163,11 +167,15 @@ Record the decision on stage `verify`; its reason shows in the pane's stage row 
 - Skip: `{ action: "stage", stage: "verify", status: "skipped", summary: "Skipped: <reason>" }`, refresh the strip's e2e slot (`e2e: skipped · <reason>`), move on.
 - Run: the `running` call carries the route's `backend`, `model` and `effort` and `note: "E2E: run · <reason>"`.
 
-**6b. Run**, at the route's model and effort, in this order:
+**6b. Drive**, in the background while stage 4 reviews (a linked session, or a background subagent), at the route's model and effort, in this order:
 
 1. The profile names an `e2e` skill: run it against the real stack for the lanes the acceptance criteria name. Repo-specific setup (containers, databases, build mounts) belongs to that skill, not here.
 2. No `e2e` skill, but `.claude/launch.json` exists: a Browser-pane smoke. `preview_start` its first configuration, navigate to the routes or screens the diff touches, take an after screenshot of every state the criteria mention, and read the console for errors. A before screenshot comes from the base branch when a second preview of it is cheap; otherwise say "after only" in a `note`.
 3. Neither: `skipped` with summary `Skipped: no e2e skill or .claude/launch.json in this repo`. Flag it when a criterion needs the running stack.
+
+This pass changes no code and pushes nothing, because the review is reading the same head; tell the e2e skill so, and that it runs no review gate of its own. A lane that fails goes into `<criteriaDir>/e2e/defects.md`: the lane, the criterion, what was seen against what was expected, the screenshot. Close the attempt `done` with the lanes and defects counted (`5 lanes · 2 defects`). Where nothing can run in the background, run stage 4 first and 6b after it.
+
+**6c. Fix and re-drive**, after stage 5's push, only when 6b reported defects or the stage-5 commits change what a driven lane shows. Continue the same e2e session or agent, which still has the stack up: pull, fix the defects it reported, drive the failed lanes and the lanes the stage-5 commits touch again, replace their screenshots, run `lint` and the touched tests, commit, push. Record it as the next attempt of stage `verify` (`running` again), each fix a `did` under its lane. A defect it cannot fix in two tries is a `flag`, and its criterion will be `partial` or `no` at stage 7.
 
 Stage 6 never posts a PR comment, and tells the e2e skill not to; its screenshots and table reach the PR only through the proof. Keep screenshots in `<criteriaDir>/e2e/`; Browser-pane screenshots land at `~/.claude/projects/<project>/<session>/tool-results/mcp-Claude_Browser-blob-*.jpg`, so copy the ones you keep. A query-perf route adds a measurement lane (timings or query counts before and after). Cross-repo features start the siblings' branches too and drive the flow across them. Link the published artifact or screenshots to the stage, record each lane as a `did`, flag any lane you could not drive.
 
@@ -175,7 +183,7 @@ Stage 6 never posts a PR comment, and tells the e2e skill not to; its screenshot
 
 **Delta review first.** Read the `review` stage's `headSha` from `{ action: "status" }`. When commits landed after it (address fixes, e2e fixes), run `pr-pipeline:review` with the stage-4 inputs plus `since <headSha>`, so it reviews only `git diff <headSha>..HEAD`, at stage 4's routed model with effort one step lower (low stays low), then refresh the strip. A `changes requested` on the delta stops the pipeline with status `failed`, and so does the review skill's round cap: a PR that has had three AI reviews is not reviewed a fourth time. Threads and held findings from an `lgtm` delta are fixed as in stage 5; those fixes do not trigger another delta. Skip it when `headSha` is the current head.
 
-Re-read `<criteriaDir>/acceptance.md`. Record every criterion with `criterion`, `met` and `evidence`: a test name, a screenshot path, a log line, a database row. `partial` is for evidence that covers the happy path only. A `no` is a gap: flag it, swap to the `needsWork` label, go back to stage 2 for the gap, then re-run 3 through 7 for the delta (the review as a delta review). After the second loop, stop with status `failed` and the open gaps listed. Confidence: criteria met over criteria total, as a percentage. Refresh the status strip, `{ action: "pr" }`.
+**Independent check.** The session that drove the build does not grade it. Write `<criteriaDir>/acceptance-check.md`: `acceptance-prompt.md` from this skill's directory, then the criteria from `<criteriaDir>/acceptance.md`, the base SHA, the `test` command, and the evidence on hand (tests added, the lanes and screenshots in `<criteriaDir>/e2e/`). Run it through the Agent tool (`subagent_type: "pr-pipeline:checker"`) at the route's Check model and effort, which the stage's `running` call carries. It answers one verdict per criterion with the evidence it opened. Record each as it stands, with `criterion`, `met` and `evidence`: a test name, a screenshot path, a log line, a database row. `partial` is for evidence that covers only part of the criterion. Where the checker missed evidence that exists, point it there and ask once more; never raise a verdict yourself. A verdict you still think is wrong stands, with a `flag` giving your reason. A `no` is a gap: flag it, swap to the `needsWork` label, go back to stage 2 for the gap, then re-run 3 through 7 for the delta (the review as a delta review). After the second loop, stop with status `failed` and the open gaps listed. Confidence: criteria met over criteria total, as a percentage. Refresh the status strip, `{ action: "pr" }`.
 
 ### 8. Merge risk
 
@@ -185,7 +193,7 @@ Run the `pr-pipeline:risk` skill in a subagent at the route's model and effort, 
 
 Read `{ action: "pr", fresh: true }` first: a failing check is fixed (back through stage 5's push path) before the proof is posted; pending checks are named under Not verified.
 
-**Human look.** Yes when the merge risk is medium or high, the acceptance confidence is under 80, or the AI review ended `changes requested`. Record it as a `note` on stage 9 (`Needs a human look: risk medium` or `No human look needed: risk low, confidence 92%, review lgtm`). The person decides who to ask; the pipeline never requests reviewers.
+**Human look.** Yes when the merge risk is medium or high, the acceptance confidence is under 80, the AI review ended `changes requested`, or the spec check was due and nobody confirmed it. Record it as a `note` on stage 9 (`Needs a human look: risk medium` or `No human look needed: risk low, confidence 92%, review lgtm`). The person decides who to ask; the pipeline never requests reviewers.
 
 Post one PR comment headed "Pipeline proof", holding evidence only:
 

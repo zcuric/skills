@@ -39,6 +39,9 @@ One heading per stage attempt (`## 4 review (2)` for the second), with status, s
 | Agent tool, `start_session`, "session" or "subagent" in the routing table | The harness's own subagent when it has one; else a fresh non-interactive run of its CLI with the brief as the prompt (`codex exec`, `opencode run`); else this session. The brief is the same either way. |
 | Models `haiku`, `sonnet`, `opus` and an effort | The harness's small, default and strongest model, at the nearest effort it has. Record what ran on the stage's `ran:` line. |
 | The claude review backend | See "Review" below. |
+| `subagent_type: "pr-pipeline:checker"` (the review's verifier, stage 7's acceptance check) | A fresh process with the prompt file and the rules from `agents/checker.md`, as the reviewer runs. Never this session. |
+| Stages 4 and 6b started together | In the background when the harness can run a second process; otherwise stage 4, then 6b. |
+| The spec check | Ask in chat with the rest of the stage-1 question. |
 | Browser-pane smoke from `.claude/launch.json` | The profile's `e2e` skill or command when there is one; else the harness's own browser tool; else stage 6 is `skipped` with the reason, flagged when a criterion needs the running stack. |
 | "points at the pane", "never tell the person to open the PR page" | The closing message gives the PR number and URL and the path of `run.md`. |
 | The Merge button, Fix CI, Sync with base | The person merges. Failing checks and a base that moved are handled as the skill says, with `gh`. |

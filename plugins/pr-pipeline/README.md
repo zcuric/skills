@@ -31,21 +31,27 @@ Needs the GitHub CLI (`gh`) logged in. Jira and Linear tickets need their MCP co
 | `/pipeline <issue or PR URL>` | that issue; a PR URL picks up the open PR from the review stage on |
 | `/pipeline "add CSV export to the orders list"` | the task in words, no tracker |
 
-At the start it asks you one question, at most, covering only what it cannot decide alone (a gap in the ticket, the review backend the first time, whether to save the repo's conventions). Everything else it decides and writes down in the pane.
+At the start it asks you one question, at most, covering only what it cannot decide alone (a gap in the ticket, the spec on risky or under-specified work, the review backend the first time, whether to save the repo's conventions). Everything else it decides and writes down in the pane.
 
 ## The nine stages
 
 | # | Stage | What happens |
 | --- | --- | --- |
-| 1 | Enhance | Reads the ticket, writes the acceptance criteria and a spec, posts the spec on the ticket, classifies the task and picks models |
+| 1 | Enhance | Reads the ticket, writes the acceptance criteria and a spec, posts the spec on the ticket, classifies the task and picks models; asks you to confirm the spec when the work is risky or the criteria had to be derived |
 | 2 | Implement | Branches, reproduces a bug with a failing test first, implements, lints, tests, commits |
 | 3 | Create PR | Opens the PR with a skimmable body (link line, status strip, summary, one diagram, test plan) and labels |
-| 4 | AI review | Posts one review: a one-line verdict and a line comment per confirmed defect; swaps the AI label |
+| 4 | AI review | Posts one review: a one-line verdict and a line comment per confirmed defect; swaps the AI label. Starts together with stage 6 |
 | 5 | Address | Fixes findings, replies in each thread with the commit, resolves it; a finding it turns down is resolved with the reason and flagged |
-| 6 | E2E verify | A quick check first (see below); then drives the real app: the repo's e2e skill, else a browser smoke from `.claude/launch.json`, else skipped with the reason |
-| 7 | Acceptance | First a delta review of any commits since the AI review (changes requested there stops the run); then checks every criterion with evidence (test, screenshot, log line); a gap loops back to stage 2 once |
+| 6 | E2E verify | A quick check first (see below); then drives the real app in the background while stage 4 reviews: the repo's e2e skill, else a browser smoke from `.claude/launch.json`, else skipped with the reason. Defects it finds are fixed and driven again after stage 5 |
+| 7 | Acceptance | First a delta review of any commits since the AI review (changes requested there stops the run); then a separate read-only agent checks every criterion against the evidence (test, screenshot, log line) and its verdicts are recorded as they stand; a gap loops back to stage 2 once |
 | 8 | Merge risk | Verdicts on alignment, impact, verification, rollback cost, error detection, and an overall low / medium / high |
 | 9 | Final proof | One evidence-only PR comment, a summary on the ticket, and the decision on who reviews |
+
+Three things keep a run honest and quick:
+
+- **The spec is confirmed before code on work that can go badly wrong.** Sensitive, architecture and business-logic tickets, and mid-size ones whose criteria had to be derived, stop once at stage 1 with `Spec: Build it / Stop here`. Small fixes, style and copy never stop. A run nobody could ask goes on, flags it, and the proof asks for a human look.
+- **Review and e2e run side by side.** Both read the same commit and the first e2e pass changes nothing, so the review does not wait for the slowest stage. Review findings are fixed first; then the e2e run, with the stack still up, fixes what it found and drives those screens again.
+- **The builder does not grade its own work.** At stage 7 a fresh agent that saw none of the build reads each criterion literally, opens the test or screenshot offered as proof, and answers yes, partial or no. The pipeline may point it at evidence it missed; it cannot raise a verdict.
 
 ### When e2e is skipped
 
@@ -55,7 +61,7 @@ Not every change needs the running app. Before stage 6 starts, the pipeline chec
 
 **Write the criteria into the ticket.** Stage 1 copies the acceptance criteria word for word and every later stage checks against them. A ticket without criteria still runs, but they are derived and flagged, and the run's confidence drops. Three lines someone can test ("a due date in the past is refused, with the error under the field") do more than a paragraph of background.
 
-**Read the spec, not the transcript.** In the first minutes the spec lands on the ticket as a "Pipeline spec" comment: the goal, what happens today with the files it opened, the expected behaviour, what stays as it is, how it will be verified. If the spec has the wrong idea, stop the run and fix the ticket. That is the cheapest moment to correct it.
+**Read the spec, not the transcript.** In the first minutes the spec lands on the ticket as a "Pipeline spec" comment: the goal, what happens today with the files it opened, the expected behaviour, what stays as it is, how it will be verified. On risky or under-specified work the run stops there and asks you to confirm it; on anything else, if the spec has the wrong idea, stop the run and fix the ticket. That is the cheapest moment to correct it.
 
 **Save the profile once per repo.** The first run discovers the lint and test commands, the labels and the rule files, and offers to save `.pr-pipeline.json`. Commit it, then add what discovery cannot know: the `e2e` skill, `siblings`, `e2ePolicy`.
 
@@ -195,9 +201,10 @@ Discovery (the `profile` action, when there is no file) reads `gh repo view`, `g
 | Path | What |
 | --- | --- |
 | `hooks/` | The pane, the `mcp__pr-pipeline__pipeline` tool, PR polling, Merge and the other pane buttons |
-| `skills/run/` | The conductor that drives the nine stages, plus the spec format, tracker adapters, open-PR start, PR body template and the guide for other harnesses |
+| `skills/run/` | The conductor that drives the nine stages, plus the spec format, the acceptance-check prompt, tracker adapters, open-PR start, PR body template and the guide for other harnesses |
 | `skills/review/` | The AI review, its backends, and the verifier and security prompts |
 | `skills/risk/` | The merge-risk verdict |
 | `agents/reviewer.md` | The read-only reviewer the review skill dispatches |
+| `agents/checker.md` | The read-only checker that verifies review findings and checks the acceptance criteria |
 | `profiles/` | Profile schema and a filled-in example |
 | `evals/` | What three end-to-end runs should show (GitHub issue without a profile, Jira with a profile, a task in words) |
