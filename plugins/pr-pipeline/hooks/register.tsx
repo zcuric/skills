@@ -6,7 +6,7 @@ import { chip, confidenceTone, gauge, INK, isGraphic, pulse, RISK_TONE, STATUS_T
 import type { Tone } from './look'
 import { card, duration, elapsed, isHuman, prCard, settingsCard, stageDetail, STATUS_GLYPH, submitPrompt, threadsCard } from './pane-pr'
 import type { PaneContext, PaneEvent } from './pane-pr'
-import { failingRunIds, fixCiPrompt, prRefOf, refreshPr, syncPrompt, tick } from './pr'
+import { deltaReviewPrompt, failingRunIds, fixCiPrompt, prRefOf, refreshPr, staleVerdictText, syncPrompt, tick } from './pr'
 import {
   STAGES, closeRun, ensureHarnesses, followStoreOnce, isOpenRun, loadRuns, modelChip, pickedKey, pipelineOptions,
   reopenRun, runConfidence, stageLabel,
@@ -55,7 +55,12 @@ function prAttention($: EngineInterface, run: PipelineRun, snapshot: PrSnapshot 
   const changesBy = [...new Set(snapshot.reviews.filter(review => review.state === 'CHANGES_REQUESTED' && isHuman(review.author)).map(review => review.author))]
   const humanThreads = snapshot.threads.filter(thread => !thread.isResolved && isHuman(thread.comments[0]?.author ?? 'bot'))
   const failed = snapshot.counts.checksFailed
+  const stale = run.closedAt === undefined ? staleVerdictText(run, snapshot) : null
+  const reviewedSha = run.stages.find(stage => stage.id === 'review')?.headSha
   const items: Array<Attention | null> = [
+    stale !== null && reviewedSha !== undefined && snapshot.headSha !== undefined
+      ? { key: 'attn:stale', text: stale, tone: 'warn', onPress: () => submitPrompt($, deltaReviewPrompt(run, ref, reviewedSha, snapshot.headSha ?? '')) }
+      : null,
     failed > 0 ? { key: 'attn:ci', text: `✗ ${failed} failing check${failed === 1 ? '' : 's'}`, tone: 'bad', onPress: () => submitPrompt($, fixCiPrompt(ref, failingRunIds(snapshot))) } : null,
     changesBy.length > 0 ? { key: 'attn:changes', text: `Changes requested by ${changesBy.join(', ')}`, tone: 'bad' } : null,
     humanThreads.length > 0 ? { key: 'attn:threads', text: `${humanThreads.length} open review thread${humanThreads.length === 1 ? '' : 's'}`, tone: 'warn' } : null,

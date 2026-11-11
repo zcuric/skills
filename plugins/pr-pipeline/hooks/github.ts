@@ -35,7 +35,8 @@ const REPLY_MUTATION =
   'mutation($threadId:ID!,$body:String!){addPullRequestReviewThreadReply(input:{pullRequestReviewThreadId:$threadId,body:$body}){comment{id url}}}'
 const RESOLVE_MUTATION = 'mutation($threadId:ID!){resolveReviewThread(input:{threadId:$threadId}){thread{id isResolved}}}'
 const VIEW_FIELDS =
-  'number,title,url,state,isDraft,mergeable,mergeStateStatus,reviewDecision,labels,statusCheckRollup,reviews,headRefName,baseRefName,additions,deletions,changedFiles'
+  'number,title,url,state,isDraft,mergeable,mergeStateStatus,reviewDecision,labels,statusCheckRollup,reviews,headRefName,headRefOid,commits,baseRefName,additions,deletions,changedFiles'
+const COMMIT_LIMIT = 100
 
 const OWNER_REPO = /^([\w.-]+)\/([\w.-]+?)(?:\.git)?\/?$/
 const SCP_REMOTE = /^[\w.-]+@([\w.-]+):\/?(.+)$/
@@ -134,7 +135,7 @@ function startFailure(tool: string, argv: readonly string[], error: unknown): st
   return firstLine(stderr) || firstLine(message) || `${tool} failed`
 }
 
-async function runCommand($: EngineInterface, argv: readonly string[], options: CommandOptions): Promise<GhResult> {
+export async function runCommand($: EngineInterface, argv: readonly string[], options: CommandOptions): Promise<GhResult> {
   const tool = argv[0] ?? 'command'
   let ran: unknown
   try {
@@ -352,6 +353,8 @@ export function toSnapshot(view: unknown, threadNodes: unknown, now: number): Pr
   const record = asRecord(view)
   const checks = asArray(record.statusCheckRollup).map(toCheck)
   const threads = threadNodesOf(threadNodes).map(toThread)
+  const headSha = str(record.headRefOid)
+  const commitShas = nodesOf(record.commits).map(commit => str(asRecord(commit).oid)).filter(oid => oid !== '').slice(-COMMIT_LIMIT)
   return {
     number: num(record.number),
     url: str(record.url),
@@ -377,6 +380,8 @@ export function toSnapshot(view: unknown, threadNodes: unknown, now: number): Pr
       threadsOpen: threads.filter(thread => !thread.isResolved && !thread.isOutdated).length,
       threadsTotal: threads.length,
     },
+    ...(headSha !== '' ? { headSha } : {}),
+    commitShas,
     fetchedAt: now,
   }
 }
@@ -392,6 +397,7 @@ export function toSummary(snapshot: PrSnapshot): PrSummary {
     mergeState: snapshot.mergeState,
     reviewDecision: snapshot.reviewDecision,
     counts: snapshot.counts,
+    ...(snapshot.headSha !== undefined ? { headSha: snapshot.headSha } : {}),
     fetchedAt: snapshot.fetchedAt,
     failing: snapshot.checks.filter(isFailed).map(check => check.name),
   }
@@ -403,6 +409,14 @@ export async function replyToThread($: EngineInterface, pr: PrRef, threadId: str
 
 export async function resolveThread($: EngineInterface, pr: PrRef, threadId: string, cwd?: string): Promise<GhResult> {
   return gh($, ['api', 'graphql', '-f', `query=${RESOLVE_MUTATION}`, '-f', `threadId=${threadId}`], ghOptions(pr, cwd))
+}
+
+/** The PR's head commit as GitHub has it now, or null when gh cannot say. */
+export async function prHeadSha($: EngineInterface, pr: PrRef, cwd?: string): Promise<string | null> {
+  const view = await gh($, ['pr', 'view', String(pr.number), '--repo', pr.slug, '--json', 'headRefOid'], ghOptions(pr, cwd))
+  if (!view.ok) return null
+  const sha = str(asRecord(parseJson(view.stdout)).headRefOid)
+  return sha === '' ? null : sha
 }
 
 export async function mergePr($: EngineInterface, pr: PrRef, method: MergeMethod, cwd?: string): Promise<GhResult> {

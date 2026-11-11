@@ -48,6 +48,8 @@ export type Stage = {
   confidence?: number
   /** Counts restarts: 2 after the stage ran once and was started again; absent means 1 */
   attempt?: number
+  /** The PR head commit a done review, acceptance or proof judged */
+  headSha?: string
 }
 
 export type PrCheckStatus = 'queued' | 'in_progress' | 'completed' | 'pending'
@@ -118,13 +120,17 @@ export type PrSnapshot = {
   reviews: PrReview[]
   threads: PrThread[]
   counts: PrCounts
+  /** headRefOid; absent when gh did not return it */
+  headSha?: string
+  /** The PR's commit oids, oldest first, the last 100 */
+  commitShas: string[]
   fetchedAt: number
 }
 
 /** What a run keeps of the PR in the store: no threads, no hunks */
 export type PrSummary = Pick<
   PrSnapshot,
-  'number' | 'url' | 'title' | 'state' | 'isDraft' | 'mergeable' | 'mergeState' | 'reviewDecision' | 'counts' | 'fetchedAt'
+  'number' | 'url' | 'title' | 'state' | 'isDraft' | 'mergeable' | 'mergeState' | 'reviewDecision' | 'counts' | 'headSha' | 'fetchedAt'
 > & { failing: string[] }
 
 export type PrState = { snapshot?: PrSnapshot; error?: string; fetchedAt: number; isFetching?: boolean }
@@ -153,6 +159,10 @@ export type PipelineRun = {
   risk?: Risk
   models?: Partial<Record<StageId, StageModel>>
   pr?: PrSummary
+  /** Absolute criteria directory, set by the profile action */
+  criteriaDir?: string
+  /** The repo profile's merge method, set by the profile action; the pane's Merge button prefers it */
+  mergeMethod?: MergeMethod
   /** Set when the PR was first seen MERGED; the run closes itself five minutes later */
   mergedAt?: number
   /** Closed runs leave the Runs switcher; status still returns them */
@@ -198,7 +208,40 @@ declare module 'claude-code' {
   }
 }
 
-export type PipelineAction = 'start' | 'stage' | 'link' | 'unlink' | 'status' | 'pr' | 'pr-reply' | 'pr-resolve' | 'settings' | 'close'
+export type PipelineAction =
+  | 'start' | 'stage' | 'link' | 'unlink' | 'status' | 'pr' | 'pr-reply' | 'pr-resolve' | 'settings' | 'profile' | 'close'
+
+export type ProfileLabels = {
+  typeBug: string | null
+  typeFeature: string | null
+  stateReview: string | null
+  aiChangesRequested: string | null
+  aiLgtm: string | null
+  aiVerified: string | null
+  readyToMerge: string | null
+  needsWork: string | null
+}
+
+export type ProfileSibling = { name: string; path: string; contracts?: boolean }
+
+/** `profiles/pr-pipeline.schema.json`, every field filled */
+export type RepoProfile = {
+  tracker: Tracker | 'auto'
+  branchPattern: string
+  titlePrefix: string
+  linkLine: string
+  prBody: 'visual-pr' | 'plain'
+  labels: ProfileLabels
+  lint: string
+  test: string
+  e2e: string | null
+  e2ePolicy: 'auto' | 'always' | 'never'
+  securityAgent: string | null
+  siblings: ProfileSibling[]
+  rules: string[]
+  criteriaDir: string
+  mergeMethod: MergeMethod
+}
 
 /** The pipeline tool this mod registers, so `e.tool === "mcp__pr-pipeline__pipeline"` narrows. */
 export type PipelineToolInput = {
@@ -234,6 +277,10 @@ export type PipelineToolInput = {
   body?: string
   /** settings: fields to write through $.config.set */
   set?: PipelineSettingsPatch
+  /** profile: write a discovered profile as .pr-pipeline.json */
+  save?: boolean
+  /** stage: the commit a done review, acceptance or proof judged; defaults to the PR head */
+  sha?: string
 }
 
 declare module 'claude-code' {

@@ -18,8 +18,9 @@ import type {
   StageStatus,
   Tier,
 } from '../types'
-import { currentBranch, git, parsePrUrl, prPageUrl, replyToThread, resolveThread } from './github'
+import { currentBranch, git, parsePrUrl, prHeadSha, prPageUrl, replyToThread, resolveThread } from './github'
 import { prRefOf, refreshPr, schedulePrRefresh } from './pr'
+import { resolveProfile } from './profile'
 import {
   BACKENDS, CLAUDE_MODELS, EFFORTS, STAGES, TRACKERS, changeRun, closeRun, ensureHarnesses, followStoreOnce, freshRun, isOpenRun,
   isStageId, pipelineOptions, rekeyRun, repoFor, resolveRun, runKey, shortModel, stageLabel,
@@ -31,7 +32,7 @@ const selectedKey = atom({ plugin: 'pr-pipeline', key: 'selectedKey' } as const,
 const openStage = atom({ plugin: 'pr-pipeline', key: 'openStage' } as const, null as StageId | null)
 const prStates = atom({ plugin: 'pr-pipeline', key: 'pr' } as const, {} as Record<string, PrState>)
 
-const ACTIONS: readonly PipelineAction[] = ['start', 'stage', 'link', 'unlink', 'status', 'pr', 'pr-reply', 'pr-resolve', 'settings', 'close']
+const ACTIONS: readonly PipelineAction[] = ['start', 'stage', 'link', 'unlink', 'status', 'pr', 'pr-reply', 'pr-resolve', 'settings', 'profile', 'close']
 const STATUSES: readonly StageStatus[] = ['pending', 'running', 'done', 'failed', 'skipped']
 const ENDINGS: readonly StageStatus[] = ['done', 'failed', 'skipped']
 const TIERS: readonly Tier[] = ['S', 'M', 'L']
@@ -40,6 +41,8 @@ const METS: readonly Met[] = ['yes', 'partial', 'no']
 const PR_PAGE = /\/pull\/\d+\/?$/
 const BRANCH_MOVE = /\bgit\s+(checkout\s+-b|switch\s+(?:-c|--create)|branch\s+(?:-m|-M|--move)|worktree\s+add\b[^;&|\n]*?\s-[bB])\s+([^;&|\n]+)/
 const REFRESH_STAGES: readonly StageId[] = ['pr', 'review', 'address', 'proof']
+const VERDICT_STAGES: readonly StageId[] = ['review', 'acceptance', 'proof']
+const SHA = /^[0-9a-f]{7,40}$/i
 // Host-agnostic so GitHub Enterprise PR urls are captured too.
 const PR_URL = /https?:\/\/[^/\s]+\/[^/\s]+\/[^/\s]+\/pull\/\d+/
 
@@ -115,6 +118,24 @@ async function settingsAnswer($: EngineInterface, input: PipelineToolInput, opti
   return { result: JSON.stringify({ ...options, ...applied, harnesses: found, claudeModels: CLAUDE_MODELS, efforts: EFFORTS }) }
 }
 
+/** The commit a verdict judged: the given sha, else the PR head on GitHub, else HEAD of the run's checkout; null when unknown. */
+async function verdictSha($: EngineInterface, input: PipelineToolInput, run: PipelineRun): Promise<string | null> {
+  if (input.sha !== undefined) return input.sha
+  const ref = prRefOf(run)
+  if (ref !== null) return prHeadSha($, ref, run.cwd)
+  const head = await git($, ['rev-parse', 'HEAD'], run.cwd)
+  const sha = head.ok ? head.stdout.trim() : ''
+  return SHA.test(sha) ? sha : null
+}
+
+async function profileAnswer($: EngineInterface, input: PipelineToolInput, key: string, run: PipelineRun): Promise<ToolAnswer> {
+  const resolved = await resolveProfile($, run, { save: input.save === true })
+  if (!resolved.ok) return deny(resolved.error)
+  const { criteriaDir, profile } = resolved.result
+  await changeRun($, key, existing => ({ ...existing, criteriaDir, mergeMethod: profile.mergeMethod }))
+  return { result: JSON.stringify(resolved.result) }
+}
+
 async function threadAnswer($: EngineInterface, input: PipelineToolInput, key: string): Promise<ToolAnswer> {
   const run = (await read($, runs))[key]
   const ref = prRefOf(run)
@@ -166,6 +187,7 @@ export async function handleTool($: EngineInterface, input: PipelineToolInput, o
     return { result: JSON.stringify(state?.snapshot ?? { error: state?.error ?? 'PR not fetched' }) }
   }
   if (input.action === 'pr-reply' || input.action === 'pr-resolve') return threadAnswer($, input, key)
+  if (input.action === 'profile') return profileAnswer($, input, key, before)
 
   const prUrl = repairedPrUrl(input.prUrl)
   if (!isStageId(input.stage)) return deny(`"stage" must be one of ${STAGES.map(s => s.id).join(', ')}.`)
@@ -193,6 +215,7 @@ export async function handleTool($: EngineInterface, input: PipelineToolInput, o
     if (blocking.length > 0) return deny(`proof cannot be done while these are open: ${stageList(blocking)}. Close or skip them first.`)
   }
 
+  if (input.sha !== undefined && !SHA.test(input.sha)) return deny('"sha" must be a commit sha (7 to 40 hex characters).')
   if (input.criterion !== undefined && (input.met === undefined || !METS.includes(input.met))) {
     return deny('a "criterion" needs "met" yes, partial or no.')
   }
@@ -205,6 +228,8 @@ export async function handleTool($: EngineInterface, input: PipelineToolInput, o
     ? before.stages.slice(0, STAGES.findIndex(meta => meta.id === stageId)).filter(isOpenStage)
     : []
   const stamped = await withSessionModel($, input)
+  const isVerdict = status === 'done' && VERDICT_STAGES.includes(stageId) && (beforeStatus !== 'done' || input.sha !== undefined)
+  const headSha = isVerdict ? await verdictSha($, input, before).catch(() => null) : null
   let isUnstartedEnd = false
 
   const run = await changeRun($, key, existing => {
@@ -235,6 +260,7 @@ export async function handleTool($: EngineInterface, input: PipelineToolInput, o
         flags: input.flag ? [...stage.flags, input.flag] : stage.flags,
         notes: input.note ? [...stage.notes, input.note] : stage.notes,
         criteria: criterion ? withCriterion(stage.criteria, criterion) : stage.criteria,
+        headSha: headSha ?? stage.headSha,
       }
     })
   })
@@ -256,7 +282,8 @@ export async function handleTool($: EngineInterface, input: PipelineToolInput, o
     isUnstartedEnd ? '(no running call was recorded)' : null,
     stillOpen.length > 0 ? `Still open before this: ${stageList(stillOpen)} — close or skip them.` : null,
   ].filter((line): line is string => line !== null)
-  return { result: [`Stage ${stageId} ${status ?? 'updated'}${input.summary ? `: ${input.summary}` : ''}${tail}.`, ...warnings].join(' ') }
+  const at = headSha !== null ? ` (at ${headSha.slice(0, 7)})` : ''
+  return { result: [`Stage ${stageId} ${status ?? 'updated'}${input.summary ? `: ${input.summary}` : ''}${at}${tail}.`, ...warnings].join(' ') }
 }
 
 async function startAnswer(
@@ -395,6 +422,10 @@ export const TOOL_DESCRIPTION =
   'action "pr" returns the live PR (checks, reviews, threads) as JSON; "fresh" skips the 15 s cache. ' +
   'action "pr-reply" (threadId, body) replies to a review thread; "pr-resolve" (threadId) resolves one. ' +
   'action "settings" returns the review settings and detected tools; "set" writes settings. ' +
+  'action "profile" resolves the repo profile (.pr-pipeline.json, then .claude/pr-pipeline.json, else discovery from gh and the build files), ' +
+  'fills every default, creates the criteria directory and returns { source, path?, discovered?, base?, profile, criteriaDir }; ' +
+  '"save": true writes a discovered profile as .pr-pipeline.json (left untracked) and is refused when a profile file exists. ' +
+  'A review, acceptance or proof set to done records the commit it judged: "sha", else the PR head, else HEAD. ' +
   'action "close" closes the run. action "status" returns the run as JSON. ' +
   'Only "start" creates a run; every other action needs one, and "proof" cannot be done while another stage is pending or running.'
 
@@ -429,6 +460,8 @@ export const INPUT_SCHEMA = {
     fresh: { type: 'boolean', description: 'pr: skip the 15 s cache' },
     threadId: { type: 'string', description: 'pr-reply, pr-resolve: review thread id' },
     body: { type: 'string', description: 'pr-reply: the reply' },
+    save: { type: 'boolean', description: 'profile: write a discovered profile as .pr-pipeline.json' },
+    sha: { type: 'string', description: 'stage: the commit a done review, acceptance or proof judged; defaults to the PR head' },
     set: {
       type: 'object',
       description: 'settings: fields to write',

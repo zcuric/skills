@@ -191,6 +191,22 @@ export const fixCiPrompt = (ref: PrRef, runIds: string[]): string => {
 export const syncPrompt = (ref: PrRef, snapshot: PrSnapshot): string =>
   `PR #${ref.number} (repo ${ref.slug}) is behind ${snapshot.baseRefName}. Merge ${snapshot.baseRefName} into ${snapshot.headRefName}, resolve any conflicts, run the affected tests, push, and record a did on the address stage of the pipeline.`
 
+export const deltaReviewPrompt = (run: PipelineRun, ref: PrRef, reviewedSha: string, headSha: string): string =>
+  `Run the pr-pipeline:review skill on PR #${ref.number} for the commits after ${reviewedSha} only (git diff ${reviewedSha}..${headSha}), passing branch "${run.key}". Then re-run the acceptance check and the proof if they were done.`
+
+/** `3 commits since AI review · proof stale`; null while the review judged the current head or recorded no commit. */
+export function staleVerdictText(run: PipelineRun, snapshot: PrSnapshot): string | null {
+  const head = snapshot.headSha
+  const reviewed = run.stages.find(stage => stage.id === 'review')?.headSha
+  if (head === undefined || reviewed === undefined || reviewed === head) return null
+  const at = snapshot.commitShas.indexOf(reviewed)
+  const since = at < 0 ? null : snapshot.commitShas.length - 1 - at
+  const proof = run.stages.find(stage => stage.id === 'proof')
+  const isProofStale = proof?.status === 'done' && proof.headSha !== undefined && proof.headSha !== head
+  const lead = since === null ? 'AI review predates a force-push' : `${since} commit${since === 1 ? '' : 's'} since AI review`
+  return `${lead}${isProofStale ? ' · proof stale' : ''}`
+}
+
 export const fixThreadPrompt = (thread: PrThread): string => {
   const first = thread.comments[0]
   const where = `${thread.path}${thread.line !== null ? `:${thread.line}` : ''}`
@@ -212,9 +228,10 @@ export async function mergeFromPane($: EngineInterface, key: string, method: Mer
   const ref = prRefOf(run)
   if (run === undefined || ref === null || !(await claimBusy($, key))) return
   try {
-    const answer = await $.ui.ask(`Merge #${ref.number} with ${method}?`, ['Merge', 'Cancel']).catch(() => 'Cancel')
+    const chosen = run.mergeMethod ?? method
+    const answer = await $.ui.ask(`Merge #${ref.number} with ${chosen}?`, ['Merge', 'Cancel']).catch(() => 'Cancel')
     if (answer !== 'Merge') return
-    const merged = await mergePr($, ref, method, run.cwd)
+    const merged = await mergePr($, ref, chosen, run.cwd)
     if (!merged.ok) {
       $.ui.toast(`Merge failed: ${merged.error}`)
       return

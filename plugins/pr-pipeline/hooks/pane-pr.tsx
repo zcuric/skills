@@ -178,13 +178,14 @@ export async function prCard($: EngineInterface, e: PaneEvent, ctx: PaneContext)
         : null,
     ]
 
+  const mergeMethod = run.mergeMethod ?? options.merge_method
   const mergeRow = !isOpen
     ? null
     : (
       <Box key="pr:merge-row" flexDirection="column">
         {guard.ok && !isBusy
-          ? <Button key="pr:merge" variant="primary" label={`Merge (${options.merge_method})`}
-            onPress={() => void mergeFromPane($, key, options.merge_method).catch(err => $.ui.toast(String(err)))} />
+          ? <Button key="pr:merge" variant="primary" label={`Merge (${mergeMethod})`}
+            onPress={() => void mergeFromPane($, key, mergeMethod).catch(err => $.ui.toast(String(err)))} />
           : null}
         {!guard.ok ? <Text color={INK.warn} wrap="wrap">{`Merge: ${guard.reasons.join(' · ')}`}</Text> : null}
         {!approvalRequired(run)

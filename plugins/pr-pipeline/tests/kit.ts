@@ -19,6 +19,7 @@ export const REPO_ROUTES: readonly Route[] = [
   [['git', 'branch', '--show-current'], { stdout: 'feature/current\n' }],
   [['which', 'gh'], { stdout: '/opt/homebrew/bin/gh\n' }],
   [['which'], { exitCode: 1 }],
+  [['mkdir', '-p'], {}],
 ]
 
 /** Answers `$.process.run` from the first route whose argv prefix matches; unmatched commands exit 1. */
@@ -126,3 +127,16 @@ export const prRoutes = (world: PrWorld): Route[] => [
     ? { stdout: '{}' }
     : { stdout: JSON.stringify({ data: { repository: { pullRequest: { reviewThreads: { nodes: world.threads } } } } }) }],
 ]
+
+/** Answers `$.fs.read`, `exists` and `write` from `files` by absolute path; a write lands in `files`. */
+export function fakeFs(on: On, files: Record<string, string>): { writes: Array<{ path: string; text: string }> } {
+  const writes: Array<{ path: string; text: string }> = []
+  on('fs.read', (_$, e) => (e.path in files ? { value: files[e.path] ?? '' } : { deny: `ENOENT: ${e.path}` }))
+  on('fs.exists', (_$, e) => ({ value: e.path in files }))
+  on('fs.write', (_$, e) => {
+    writes.push({ path: e.path, text: e.text })
+    files[e.path] = e.text
+    return { value: undefined }
+  })
+  return { writes }
+}

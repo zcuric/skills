@@ -9,7 +9,9 @@ One GitHub review per run: a one- or two-line body plus one comment per finding,
 
 ## Inputs
 
-From the pipeline: the run key, the PR number, `<criteriaDir>`, the class, the backend, the model and the effort; pass the run key as `branch` on every `mcp__pr-pipeline__pipeline` call. Standalone (`/pr-pipeline:review <n>`): read the repo profile the way the run skill does (`.pr-pipeline.json`, then `.claude/pr-pipeline.json`, else defaults), take the backend, model and effort from `{ action: "settings" }` (`reviewer`, `review_model`, `review_effort`), and treat the PR as the feature class unless the diff shows a sensitive signal (auth, permissions, money, PII, migrations, contracts, infra, secrets, dependency bumps).
+From the pipeline: the run key, the PR number, `<criteriaDir>`, the class, the backend, the model and the effort; pass the run key as `branch` on every `mcp__pr-pipeline__pipeline` call. Standalone (`/pr-pipeline:review <n>`): when a pipeline run exists for the branch, `{ action: "profile" }` returns the resolved profile and `criteriaDir`; otherwise read `.pr-pipeline.json`, then `.claude/pr-pipeline.json`, else defaults. Take the backend, model and effort from `{ action: "settings" }` (`reviewer`, `review_model`, `review_effort`), and treat the PR as the feature class unless the diff shows a sensitive signal (auth, permissions, money, PII, migrations, contracts, infra, secrets, dependency bumps).
+
+**Delta mode.** `since <sha>` (from the pipeline before stage 7, or from the pane's stale-review button) reviews only `git diff <sha>..HEAD`: that diff, its files and `<sha>` as the base SHA stand in for the full diff, the changed file list and `$BASE` everywhere below. Everything else runs the same: one posted review, the label swap, and stage `review` recorded again through a new `running` call, which the tool turns into the next attempt.
 
 ## Gather
 
@@ -116,7 +118,7 @@ Description: the body says guests get the discount; the diff skips them.
 Question: Should an archived client still see files shared before the archive?
 ````
 
-- Line 1 is the verdict and the posted findings counted by severity. With no findings and a truthful description the whole body is `**AI review: lgtm** · no findings`.
+- Line 1 is the verdict and the posted findings counted by severity; in delta mode it reads `**AI review (since abc1234): lgtm** · …` with the short SHA. With no findings and a truthful description the whole body is `**AI review: lgtm** · no findings`.
 - `Description:` only when `description_confidence` is under 80: what the body says against what the diff does, in one sentence.
 - `Question:` one line per open question the ticket, the criteria and the PR body do not answer.
 - Nothing else: no badges, no tables, no reviewer or model name, no footer. The reviewer's `acceptance` verdicts are not posted; stage 7 records the criteria and the proof shows them.

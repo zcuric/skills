@@ -19,6 +19,7 @@ Needs the GitHub CLI (`gh`) logged in. Jira and Linear tickets need their MCP co
 - **Pull request card**: checks, review decision and reviewers, mergeability, and the Merge button once checks, review and risk allow it.
 - **Threads card**: unresolved review threads with their diff hunk, a reply box, Resolve, and Fix (hands the thread to the pipeline).
 - **Stage rows**: elapsed time, the attempt number when a stage ran again; open one for what the stage did, its warnings, the model that ran it, and for the acceptance stage every criterion with its evidence.
+- **Stale review**: commits pushed after the AI review show as `N commits since AI review · proof stale`; press it to have just those commits reviewed.
 
 ## Starting a run
 
@@ -40,9 +41,9 @@ At the start it asks you one question, at most, covering only what it cannot dec
 | 2 | Implement | Branches, reproduces a bug with a failing test first, implements, lints, tests, commits |
 | 3 | Create PR | Opens the PR with a skimmable body (link line, status strip, summary, one diagram, test plan) and labels |
 | 4 | AI review | Posts one review: a one-line verdict and a line comment per confirmed defect; swaps the AI label |
-| 5 | Address | Fixes findings, replies in each thread with the commit, resolves it; re-reviews once |
+| 5 | Address | Fixes findings, replies in each thread with the commit, resolves it |
 | 6 | E2E verify | A quick check first (see below); then drives the real app: the repo's e2e skill, else a browser smoke from `.claude/launch.json`, else skipped with the reason |
-| 7 | Acceptance | Checks every criterion with evidence (test, screenshot, log line); a gap loops back to stage 2 once |
+| 7 | Acceptance | First a delta review of any commits since the AI review (changes requested there stops the run); then checks every criterion with evidence (test, screenshot, log line); a gap loops back to stage 2 once |
 | 8 | Merge risk | Verdicts on alignment, impact, verification, rollback cost, error detection, and an overall low / medium / high |
 | 9 | Final proof | One evidence-only PR comment, a summary on the ticket, and the decision on who reviews |
 
@@ -108,7 +109,7 @@ All in `/config` under `pr-pipeline`, and the first four in the pane's Settings 
 
 ## Repo profile
 
-Each repo can describe its conventions in `.pr-pipeline.json` at the root (or `.claude/pr-pipeline.json`). Every field is optional. Without a file, stage 1 discovers the conventions and offers once to save them; a saved file is left untracked for you to commit, or not. Schema: [`profiles/pr-pipeline.schema.json`](profiles/pr-pipeline.schema.json). A full example: [`profiles/example.json`](profiles/example.json).
+Each repo can describe its conventions in `.pr-pipeline.json` at the root (or `.claude/pr-pipeline.json`). Every field is optional. Stage 1 resolves the profile through the pane tool's `profile` action: it reads the file, or discovers the conventions when there is none, fills every default and creates the criteria directory. After discovery the start question offers once to save the result as `.pr-pipeline.json`; the saved file is left untracked for you to commit, or not. Schema: [`profiles/pr-pipeline.schema.json`](profiles/pr-pipeline.schema.json). A full example: [`profiles/example.json`](profiles/example.json).
 
 | Field | Default | Meaning |
 | --- | --- | --- |
@@ -128,14 +129,14 @@ Each repo can describe its conventions in `.pr-pipeline.json` at the root (or `.
 | `criteriaDir` | `~/.claude/pipeline/{owner}-{repo}/{ticket}` | Where the run keeps acceptance criteria, the spec, review files and screenshots. Outside the checkout so worktrees and subagents share it. |
 | `mergeMethod` | the repo's allowed method, squash first | Merge method for this repo. |
 
-Discovery reads `gh repo view`, `gh label list` (matching `bug`, `feature`/`enhancement`, `review`, `ready to merge`, `needs (more) work` and the `ai: …` labels by name), the build files above, the repo's `.claude/skills` and `.claude/agents`, recent branch names, and the rule files.
+Discovery (the `profile` action, when there is no file) reads `gh repo view`, `gh label list` (matching `bug`, `feature`/`enhancement`, `review`, `ready to merge`, `needs (more) work` and the `ai: …` labels by name), the build files above, the repo's `.claude/skills` and `.claude/agents`, recent branch names, and the rule files.
 
 ## Files
 
 | Path | What |
 | --- | --- |
 | `hooks/` | The pane, the `mcp__pr-pipeline__pipeline` tool, PR polling, Merge and the other pane buttons |
-| `skills/run/` | The conductor that drives the nine stages |
+| `skills/run/` | The conductor that drives the nine stages, plus its tracker adapters, open-PR start and PR body template |
 | `skills/review/` | The AI review, its backends and the security prompt |
 | `skills/risk/` | The merge-risk verdict |
 | `agents/reviewer.md` | The read-only reviewer the review skill dispatches |
