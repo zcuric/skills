@@ -23,6 +23,7 @@ import {
   BACKENDS,
   EFFORTS,
   MERGE_METHODS,
+  REVIEW_COMMAND_MAX,
   STAGES,
   TRACKER_SETTINGS,
   approvalReason,
@@ -435,9 +436,32 @@ export async function settingsCard($: EngineInterface, e: PaneEvent, ctx: PaneCo
     })
     : fields.map(one => <Text key={one.key}>{`${one.label}: ${String(options[one.field])}`}</Text>)
 
+  const saveCommand = (value: string) => {
+    const command = value.trim()
+    if (command.length > REVIEW_COMMAND_MAX) {
+      void $.ui.toast(`Review command is longer than ${REVIEW_COMMAND_MAX} characters`)
+      return
+    }
+    void writeSetting($, 'review_command', command).catch(err => $.ui.toast(String(err)))
+  }
+  const commandLine = options.reviewer !== 'custom'
+    ? null
+    : e.surface !== 'mobile' && 'Input' in els
+      ? (
+        <els.Input key="set:review_command" label="Review command" placeholder="agent-cli --model {model}" submitLabel="Save"
+          value={options.review_command} onSubmit={saveCommand} />
+      )
+      : (
+        <Text key="settings:command" wrap="wrap">
+          {`Review command: ${options.review_command || 'not set'}`}
+          <Text dimColor>{'  /config pr-pipeline.review_command'}</Text>
+        </Text>
+      )
+
   return card(els, 'settings', [
     toggle,
     ...controls,
+    commandLine,
     <Text key="settings:model">
       {`Review model: ${options.review_model}`}
       <Text dimColor>{'  /config pr-pipeline.review_model'}</Text>

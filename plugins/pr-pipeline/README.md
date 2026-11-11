@@ -2,7 +2,7 @@
 
 Hand it a ticket and it takes the work all the way to a PR that is ready to merge: it writes the spec, implements, opens the PR, runs an AI review, answers the review, verifies end to end, checks every acceptance criterion and judges the merge risk. Each of those nine stages is recorded in a pane beside the chat, so you and your colleagues can see what was done, what was decided and what needs a human look. The pane also shows the PR itself (checks, review threads, a guarded Merge button), so there is nothing to open on GitHub.
 
-It works with Jira, GitHub issues, Linear, or a task typed in words, in any GitHub repo.
+It works with Jira, GitHub issues, Linear, or a task typed in words, in any GitHub repo. It is built for Claude Code; the same stages run in Codex, OpenCode and other agents without the pane (see [Other harnesses](#other-harnesses)).
 
 ## Install
 
@@ -41,7 +41,7 @@ At the start it asks you one question, at most, covering only what it cannot dec
 | 2 | Implement | Branches, reproduces a bug with a failing test first, implements, lints, tests, commits |
 | 3 | Create PR | Opens the PR with a skimmable body (link line, status strip, summary, one diagram, test plan) and labels |
 | 4 | AI review | Posts one review: a one-line verdict and a line comment per confirmed defect; swaps the AI label |
-| 5 | Address | Fixes findings, replies in each thread with the commit, resolves it |
+| 5 | Address | Fixes findings, replies in each thread with the commit, resolves it; a finding it turns down is resolved with the reason and flagged |
 | 6 | E2E verify | A quick check first (see below); then drives the real app: the repo's e2e skill, else a browser smoke from `.claude/launch.json`, else skipped with the reason |
 | 7 | Acceptance | First a delta review of any commits since the AI review (changes requested there stops the run); then checks every criterion with evidence (test, screenshot, log line); a gap loops back to stage 2 once |
 | 8 | Merge risk | Verdicts on alignment, impact, verification, rollback cost, error detection, and an overall low / medium / high |
@@ -50,6 +50,46 @@ At the start it asks you one question, at most, covering only what it cannot dec
 ### When e2e is skipped
 
 Not every change needs the running app. Before stage 6 starts, the pipeline checks the repo's `e2ePolicy`, then the changed files and the acceptance criteria. It skips e2e only when every changed file is copy, style, docs, config, CI or a dependency manifest and no criterion needs the running stack; otherwise it runs. The reason shows on the stage row in the pane (`Skipped: <reason>`) and in the e2e slot of the PR's status strip (`e2e: skipped · <reason>`). To force e2e, set `"e2ePolicy": "always"` in the repo profile, or say "run e2e" in your answer to the start question.
+
+## Getting the most out of it
+
+**Write the criteria into the ticket.** Stage 1 copies the acceptance criteria word for word and every later stage checks against them. A ticket without criteria still runs, but they are derived and flagged, and the run's confidence drops. Three lines someone can test ("a due date in the past is refused, with the error under the field") do more than a paragraph of background.
+
+**Read the spec, not the transcript.** In the first minutes the spec lands on the ticket as a "Pipeline spec" comment: the goal, what happens today with the files it opened, the expected behaviour, what stays as it is, how it will be verified. If the spec has the wrong idea, stop the run and fix the ticket. That is the cheapest moment to correct it.
+
+**Save the profile once per repo.** The first run discovers the lint and test commands, the labels and the rule files, and offers to save `.pr-pipeline.json`. Commit it, then add what discovery cannot know: the `e2e` skill, `siblings`, `e2ePolicy`.
+
+**Tell the reviewer what matters in your code.** Put a `REVIEW.md` at the repo root or in a directory, written by the people who own that code: what a reviewer must always check there, what to skip, what a failure looks like. The reviewer reads every `REVIEW.md` above a changed file, and it wins over the reviewer's defaults.
+
+```markdown
+# Review notes: billing/
+
+- Money is integer cents everywhere. A float in an amount is a high finding.
+- Every query filters by `firm_id`. A missing tenant filter is a high finding.
+- Skip naming in `legacy/`; it is being deleted.
+```
+
+**Give stage 6 something to drive.** An e2e skill named in the profile gives the strongest proof: a screenshot per criterion against the real stack. Without one the pipeline falls back to a browser smoke, or skips with the reason.
+
+**Review risky work with a second model family.** With Codex, OpenCode or another agent CLI installed, make it the reviewer. A reviewer that did not write the code and does not share the implementer's blind spots finds more.
+
+**Read the flags before you approve.** Each ⚠ on a stage row is something the pipeline decided alone or could not do: a derived criterion, a finding it turned down, a lane it could not drive, a fallback. Together with the first line of the proof comment, they are what to read.
+
+**Feed the results back.** Stage 5 records what happened to each finding (`fixed`, `rejected: wrong`, `rejected: intentional`, `left: pre-existing`) and a `Prevent at source` note when a rule would have stopped the defect. A reviewer that keeps being turned down on the same point needs a line in `REVIEW.md`. A defect that keeps coming back needs a lint rule or a line in the repo's rule files.
+
+**Use the pieces alone.** `/pipeline <PR url>` picks up a PR someone already opened, from the review stage on. `/pr-pipeline:review <n>` posts only the AI review. `/pr-pipeline:risk <n>` returns only the merge risk.
+
+## The AI review
+
+What stage 4 does to keep its comments few and worth reading:
+
+- It reviews the diff against the repo, not on its own. It opens the callers and callees of what changed, and holds the change against the ticket's criteria and the claims in the PR description. For a bug fix it checks that the cause is gone, not only the symptom.
+- Every finding is checked against the code before it is posted. For sensitive, architecture and business-logic work a separate verifier does the check, and a finding is dropped only when the verifier quotes the line that refutes it.
+- Only defects are posted: wrong behaviour, data exposure or loss, a broken contract, a test that cannot fail. Each is one line comment that opens with the consequence. Style, naming and "consider" are never posted.
+- A defect that repeats is one thread with an `Also at` line, so the whole class is fixed in one round. A defect the PR did not write is marked `[pre-existing]` and never moves the verdict.
+- Later rounds review only the commits since the last review and do not repeat what was already posted. The third review of a PR is the last: the run stops and asks for a person, because further rounds mostly turn up older bugs in the same code.
+- Every thread ends fixed, or resolved with a one-sentence reason. None is left open for you to chase.
+- It never approves. The verdict is a comment and a label; people approve.
 
 ## What it costs
 
@@ -92,18 +132,37 @@ The AI review runs on claude by default (opus at low effort unless the task clas
 
 - **codex**: runs `codex exec` in a read-only sandbox; effort maps to `model_reasoning_effort` (low, medium, high).
 - **opencode**: runs `opencode run --model provider/model`; effort is ignored; any file it touches is reverted and flagged.
+- **custom**: any other agent CLI. Set `review_command` to a command that takes the review prompt on stdin and prints its answer, with `{model}` where the model name goes (`your-agent --print --model {model}`). Effort is ignored; any file it touches is reverted and flagged. The command is read from your own settings only, never from a repo file, a ticket or a PR, and the pipeline cannot set it for you: you type it in `/config` or the Settings card.
 
-If the chosen backend is missing, fails, or answers with something that is not the review JSON after one retry, the review falls back to claude and the stage shows a warning saying so.
+The security pass and the verifier run on the same backend as the review.
+
+If the chosen backend is missing, has no command, fails, or answers with something that is not the review JSON after one retry, the review falls back to claude and the stage shows a warning saying so.
+
+## Other harnesses
+
+The pane, the `/pipeline` command and the Merge button need Claude Code. The stages are markdown skills plus `git` and `gh`, so an agent in Codex, OpenCode or any other harness that reads files and runs commands can drive them:
+
+1. Clone this repo where the agent can read it.
+2. Tell the agent: `Read <clone>/plugins/pr-pipeline/skills/run/SKILL.md and follow it for ABC-123.`
+
+To save typing, put that line in the harness's own custom command, or link `skills/run`, `skills/review` and `skills/risk` into its skills directory (`~/.codex/skills/`, `~/.config/opencode/skills/`).
+
+The skill notices the pane tool is missing and reads [`skills/run/other-harnesses.md`](skills/run/other-harnesses.md), which swaps the pane for a run record at `<criteriaDir>/run.md`, the tool calls for `gh` commands, and subagents for fresh runs of that harness's own CLI. The spec, the review rules, the PR body and the proof comment are the same. `AGENTS.md` is read as a rule file next to `CLAUDE.md`. What you give up: the live pane, the Merge, Fix CI and Sync buttons, and the run closing itself on merge.
+
+This path has not had a full end-to-end run yet. Expect rough edges.
+
+The prompts also work on their own, in any agent or in CI: [`agents/reviewer.md`](agents/reviewer.md) (review rules and the JSON contract), [`skills/review/verify-prompt.md`](skills/review/verify-prompt.md), [`skills/review/security-prompt.md`](skills/review/security-prompt.md) and [`skills/run/spec-format.md`](skills/run/spec-format.md) each take a diff or a ticket and need nothing from the plugin.
 
 ## Settings
 
-All in `/config` under `pr-pipeline`, and the first four in the pane's Settings card:
+All in `/config` under `pr-pipeline`. The pane's Settings card has the reviewer, its model and effort, the tracker, and the review command once the reviewer is `custom`:
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
-| `reviewer` | `claude` | Backend for the AI review: `claude`, `codex`, `opencode` |
-| `review_model` | `opus` | Review model when routing does not pick one (always used for codex and opencode) |
+| `reviewer` | `claude` | Backend for the AI review: `claude`, `codex`, `opencode`, `custom` |
+| `review_model` | `opus` | Review model when routing does not pick one (always used for codex, opencode and custom) |
 | `review_effort` | `low` | Review effort when routing does not pick one |
+| `review_command` | empty | Shell command for the `custom` backend: prompt on stdin, answer on stdout, `{model}` replaced with `review_model` |
 | `tracker` | `auto` | Force a tracker: `jira`, `github`, `linear`, `text` |
 | `merge_method` | `squash` | What the Merge button does: `squash`, `merge`, `rebase` |
 
@@ -136,8 +195,8 @@ Discovery (the `profile` action, when there is no file) reads `gh repo view`, `g
 | Path | What |
 | --- | --- |
 | `hooks/` | The pane, the `mcp__pr-pipeline__pipeline` tool, PR polling, Merge and the other pane buttons |
-| `skills/run/` | The conductor that drives the nine stages, plus its tracker adapters, open-PR start and PR body template |
-| `skills/review/` | The AI review, its backends and the security prompt |
+| `skills/run/` | The conductor that drives the nine stages, plus the spec format, tracker adapters, open-PR start, PR body template and the guide for other harnesses |
+| `skills/review/` | The AI review, its backends, and the verifier and security prompts |
 | `skills/risk/` | The merge-risk verdict |
 | `agents/reviewer.md` | The read-only reviewer the review skill dispatches |
 | `profiles/` | Profile schema and a filled-in example |

@@ -13,4 +13,6 @@ Every grader reads the `mcp__pr-pipeline__pipeline` calls in order. Shared asser
 - Every stage that wrote to the PR (3, 4, 5, 7, 8, 9) is followed by a `link` call and `{ action: "pr" }` before the next stage starts.
 - Stage 9 has a `note` recording the reviewer gate decision.
 - Stage 6 opens with the e2e decision, made by the conductor with no Agent call: a skip is one `skipped` call with `summary: "Skipped: <reason>"` and no model fields; a run puts `note: "E2E: run · <reason>"` on the `running` call.
+- After stage 5 no AI review thread is unresolved, and every stage-5 `did` for a finding ends with its outcome (`· fixed`, `· rejected: wrong`, `· rejected: intentional`, `· left: pre-existing`).
+- A PR never gets a fourth AI review: with three `**AI review` reviews posted, the next attempt records the round-cap `flag` and closes `review` as `failed`.
 - The closing message names the PR as `#<n>` and points at the pane.

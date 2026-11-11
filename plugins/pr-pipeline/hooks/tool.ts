@@ -107,9 +107,22 @@ const isValidSetting = (field: string, value: unknown, options: PipelineOptions)
   return pipelineOptions({ ...options, [field]: value })[field as keyof PipelineOptions] === value
 }
 
+const settingsRefusal = (set: Record<string, unknown>, options: PipelineOptions): string | null => {
+  if ('review_command' in set) {
+    return '"review_command" is a shell command, so only a person sets it: in /config pr-pipeline.review_command or the pane\'s Settings card.'
+  }
+  if (set.reviewer === 'custom' && options.review_command === '') {
+    return 'reviewer "custom" needs a review_command to run: ask the person to set /config pr-pipeline.review_command first.'
+  }
+  return null
+}
+
 async function settingsAnswer($: EngineInterface, input: PipelineToolInput, options: PipelineOptions): Promise<ToolAnswer> {
+  const set: Record<string, unknown> = input.set ?? {}
+  const refusal = settingsRefusal(set, options)
+  if (refusal !== null) return deny(refusal)
   const applied: Record<string, string> = {}
-  for (const [field, value] of Object.entries(input.set ?? {})) {
+  for (const [field, value] of Object.entries(set)) {
     if (!isValidSetting(field, value, options)) continue
     const written = await $.config.set({ key: `pr-pipeline.${field}`, value: String(value) })
     if (written.deny === undefined) applied[field] = String(value)
@@ -416,13 +429,14 @@ export const TOOL_DESCRIPTION =
   'It also appends "did" (what was done), "flag" (a warning a developer must see), "note" (a decision), ' +
   'or a "criterion" with "met" yes|partial|no and "evidence" (the same text replaces the earlier verdict); ' +
   '"confidence" is a percentage 0-100 (92, not 0.92); ' +
-  '"backend", "model" and "effort" record who ran the stage; ' +
+  '"backend" (claude, codex, opencode, custom), "model" and "effort" record who ran the stage; ' +
   '"tier" at triage and "risk" low|medium|high at the merge-risk stage are kept on the run. ' +
   'action "link" attaches a labelled URL to a stage; a PR page URL from the run\'s repo becomes the run\'s PR when the run has none, ' +
   'or when linked to the pr stage. action "unlink" (stage, href) removes a link; unlinking the run\'s PR clears it. ' +
   'action "pr" returns the live PR (checks, reviews, threads) as JSON; "fresh" skips the 15 s cache. ' +
   'action "pr-reply" (threadId, body) replies to a review thread; "pr-resolve" (threadId) resolves one. ' +
-  'action "settings" returns the review settings and detected tools; "set" writes settings. ' +
+  'action "settings" returns the review settings and detected tools; "set" writes settings ' +
+  '(reviewer claude, codex, opencode or custom; review_command, the shell command the custom reviewer runs, is returned but only a person sets it, and custom is refused without one). ' +
   'action "profile" resolves the repo profile (.pr-pipeline.json, then .claude/pr-pipeline.json, else discovery from gh and the build files), ' +
   'fills every default, creates the criteria directory and returns { source, path?, discovered?, base?, profile, criteriaDir }; ' +
   '"save": true writes a discovered profile as .pr-pipeline.json (left untracked) and is refused when a profile file exists. ' +

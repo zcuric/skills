@@ -1,7 +1,7 @@
 {
   "name": "pr-pipeline",
-  "version": "0.11.0",
-  "description": "Takes a ticket (Jira, GitHub issue, Linear, or the task in words) through nine recorded stages to a merge-ready PR, routes each stage to a model by task class, reviews with Claude, Codex or OpenCode, and shows checks, review threads and merge inside a pane so nothing needs opening on GitHub.",
+  "version": "0.12.0",
+  "description": "Takes a ticket (Jira, GitHub issue, Linear, or the task in words) through nine recorded stages to a merge-ready PR, routes each stage to a model by task class, reviews with Claude, Codex, OpenCode or any other agent CLI, and shows checks, review threads and merge inside a pane so nothing needs opening on GitHub.",
   "license": "MIT",
   "author": { "name": "Zdravko Curic", "url": "https://github.com/zcuric" },
   "types": "./types/index.d.ts",
@@ -10,14 +10,20 @@
       "type": "string",
       "title": "Review backend",
       "description": "Which harness runs the AI review stage",
-      "options": ["claude", "codex", "opencode"],
+      "options": ["claude", "codex", "opencode", "custom"],
       "default": "claude"
     },
     "review_model": {
       "type": "string",
       "title": "Review model",
-      "description": "Model for the AI review when the routing table does not pick one (claude: opus, sonnet, haiku; codex: gpt-5-codex, gpt-5, o3; opencode: provider/model)",
+      "description": "Model for the AI review when the routing table does not pick one (claude: opus, sonnet, haiku; codex: gpt-5-codex, gpt-5, o3; opencode: provider/model; custom: whatever the command takes)",
       "default": "opus"
+    },
+    "review_command": {
+      "type": "string",
+      "title": "Review command",
+      "description": "Shell command for the custom reviewer; it gets the review prompt on stdin and must print the review JSON on stdout; {model} is replaced with review_model",
+      "default": ""
     },
     "review_effort": {
       "type": "string",

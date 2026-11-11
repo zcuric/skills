@@ -17,7 +17,7 @@ export type Risk = 'low' | 'medium' | 'high'
 
 export type Met = 'yes' | 'partial' | 'no'
 
-export type Backend = 'claude' | 'codex' | 'opencode'
+export type Backend = 'claude' | 'codex' | 'opencode' | 'custom'
 
 export type Effort = 'low' | 'medium' | 'high' | 'xhigh' | 'max'
 
@@ -184,6 +184,7 @@ export type ReplyBox = { key: string; threadId: string; openedAt: number }
 export type PipelineOptions = {
   reviewer: Backend
   review_model: string
+  review_command: string
   review_effort: Effort
   tracker: Tracker | 'auto'
   merge_method: MergeMethod

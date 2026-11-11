@@ -40,7 +40,8 @@ export const STAGES: ReadonlyArray<{ id: StageId; label: string; blurb: string }
   { id: 'proof', label: 'Final proof', blurb: 'Proof comment, human-look verdict, labels set' },
 ]
 
-export const BACKENDS: readonly Backend[] = ['claude', 'codex', 'opencode']
+export const BACKENDS: readonly Backend[] = ['claude', 'codex', 'opencode', 'custom']
+export const REVIEW_COMMAND_MAX = 500
 export const EFFORTS: readonly Effort[] = ['low', 'medium', 'high', 'xhigh', 'max']
 export const TRACKERS: readonly Tracker[] = ['jira', 'github', 'linear', 'text', 'pr']
 export const TRACKER_SETTINGS: ReadonlyArray<Tracker | 'auto'> = ['auto', 'jira', 'github', 'linear', 'text']
@@ -356,6 +357,7 @@ const pickOption = <T extends string>(value: unknown, allowed: readonly T[], fal
 export const pipelineOptions = (raw: PluginOptions | Partial<PipelineOptions>): PipelineOptions => ({
   reviewer: pickOption(raw.reviewer, BACKENDS, 'claude'),
   review_model: typeof raw.review_model === 'string' && raw.review_model !== '' ? raw.review_model : 'opus',
+  review_command: typeof raw.review_command === 'string' ? raw.review_command.trim().slice(0, REVIEW_COMMAND_MAX) : '',
   review_effort: pickOption(raw.review_effort, EFFORTS, 'low'),
   tracker: pickOption(raw.tracker, TRACKER_SETTINGS, 'auto'),
   merge_method: pickOption(raw.merge_method, MERGE_METHODS, 'squash'),
