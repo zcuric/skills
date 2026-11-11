@@ -20,4 +20,4 @@ Each repo describes its conventions in `.pr-pipeline.json` (branch pattern, titl
 
 ## Updating a plugin
 
-Edit the plugin under `plugins/<name>/`, bump `version` in its `.claude-plugin/plugin.json`, run `claude plugin validate plugins/<name>` and `claude plugin test plugins/<name>`, then commit. Installed copies update with `/plugin update <name>`.
+Edit the plugin under `plugins/<name>/`, bump `version` in its `.claude-plugin/plugin.json`, run `claude plugin validate plugins/<name>` and `claude plugin test plugins/<name>`, then commit. Installed copies update with `claude plugin marketplace update zcuric`, then `claude plugin update <name>@zcuric`, then a restart.

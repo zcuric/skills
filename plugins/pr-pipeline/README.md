@@ -12,6 +12,13 @@ It works with Jira, GitHub issues, Linear, or a task typed in words, in any GitH
 
 Needs the GitHub CLI (`gh`) logged in. Jira and Linear tickets need their MCP connector (Linear also works through the `linear` CLI).
 
+To update an installed copy, refresh the marketplace, update the plugin, then restart Claude Code:
+
+```bash
+claude plugin marketplace update zcuric
+claude plugin update pr-pipeline@zcuric
+```
+
 ## What you see
 
 - **Runs switcher** with the repo, branch and current stage of every run, then the run header with ticket, tracker and repo, and the confidence and merge-risk lights. A run follows its branch through `git checkout -b`, `git switch -c` and `git branch -m`.
@@ -20,6 +27,7 @@ Needs the GitHub CLI (`gh`) logged in. Jira and Linear tickets need their MCP co
 - **Threads card**: unresolved review threads with their diff hunk, a reply box, Resolve, and Fix (hands the thread to the pipeline).
 - **Stage rows**: elapsed time, the attempt number when a stage ran again; open one for what the stage did, its warnings, the model that ran it, and for the acceptance stage every criterion with its evidence.
 - **Stale review**: commits pushed after the AI review show as `N commits since AI review · proof stale`; press it to have just those commits reviewed.
+- **Settings**: `⚙ Settings` at the top opens its own view for the review backend with its model and effort, the tracker and the merge method. Each is one click and applies to every run.
 
 ## Starting a run
 
@@ -154,6 +162,8 @@ The pane, the `/pipeline` command and the Merge button need Claude Code. The sta
 To save typing, put that line in the harness's own custom command, or link `skills/run`, `skills/review` and `skills/risk` into its skills directory (`~/.codex/skills/`, `~/.config/opencode/skills/`).
 
 The skill notices the pane tool is missing and reads [`skills/run/other-harnesses.md`](skills/run/other-harnesses.md), which swaps the pane for a run record at `<criteriaDir>/run.md`, the tool calls for `gh` commands, and subagents for fresh runs of that harness's own CLI. The spec, the review rules, the PR body and the proof comment are the same. `AGENTS.md` is read as a rule file next to `CLAUDE.md`. What you give up: the live pane, the Merge, Fix CI and Sync buttons, and the run closing itself on merge.
+
+A GUI that sits on top of an agent (T3 Code, for example) runs the pipeline through whichever agent it drives. With Claude Code as that agent and this plugin loaded, `/pipeline` works and only the pane is missing. With Codex, OpenCode or anything else, use the two steps above.
 
 This path has not had a full end-to-end run yet. Expect rough edges.
 
