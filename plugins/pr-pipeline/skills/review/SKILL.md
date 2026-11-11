@@ -7,6 +7,8 @@ description: Review an open PR with an AI reviewer (claude by default, codex or 
 
 One GitHub review per run: a one- or two-line body plus one comment per finding, pinned to the exact line. The author cannot approve their own PR, so the verdict is a `COMMENT` review and a label, never `APPROVE`; people approve.
 
+The `mcp__pr-pipeline__pipeline` tool is deferred: when it is not loaded, load it first with ToolSearch `select:mcp__pr-pipeline__pipeline`.
+
 ## Inputs
 
 From the pipeline: the run key, the PR number, `<criteriaDir>`, the class, the backend, the model and the effort; pass the run key as `branch` on every `mcp__pr-pipeline__pipeline` call. Standalone (`/pr-pipeline:review <n>`): when a pipeline run exists for the branch, `{ action: "profile" }` returns the resolved profile and `criteriaDir`; otherwise read `.pr-pipeline.json`, then `.claude/pr-pipeline.json`, else defaults. Take the backend, model and effort from `{ action: "settings" }` (`reviewer`, `review_model`, `review_effort`), and treat the PR as the feature class unless the diff shows a sensitive signal (auth, permissions, money, PII, migrations, contracts, infra, secrets, dependency bumps).

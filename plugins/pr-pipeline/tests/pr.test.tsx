@@ -1,7 +1,7 @@
 import { expect, mock, test } from 'claude-code/testing'
 
-import { boot, PANE, PR_URL, prRoutes, prThread, prView, ran, START, TOOL } from './kit'
-import type { PrWorld } from './kit'
+import { boot, PANE, PR_URL, prRoutes, prThread, prView, ran, sharedStore, START, TOOL } from './kit'
+import type { PrWorld, Route } from './kit'
 import { splitImages } from '../hooks/pane-pr'
 
 const failing = (name: string, runId: string) => ({
@@ -233,4 +233,103 @@ test('comment images become links and HTML links become markdown', () => {
     text: 'See this\n\n and [the doc](https://x.test/doc)',
     images: [{ alt: '', url: 'https://x.test/2.png' }, { alt: 'Before', url: 'https://github.com/user-attachments/assets/1' }],
   })
+})
+
+const RUN_KEY = 'o/r#feature/polled'
+const storedRun = (overrides: Record<string, unknown> = {}) => ({
+  key: RUN_KEY, branch: 'feature/polled', repo: 'o/r', prUrl: PR_URL, updatedAt: 1_000_000, stages: [], ...overrides,
+})
+
+test('a session does not fetch a PR another session fetched within 55 s', async ($, on) => {
+  const { calls, clock } = boot(on, prRoutes({ view: prView(), threads: [] }))
+  const shared = sharedStore(on, { [`run:${RUN_KEY}`]: storedRun(), [`poll:${RUN_KEY}`]: 1_000_000 })
+  await $.session.start(START)
+  const views = () => ran(calls, 'gh', 'pr', 'view').length
+
+  await clock.advance(30_000)
+  shared[`poll:${RUN_KEY}`] = clock.now()
+  await clock.advance(30_000)
+  expect(views()).toBe(0)
+
+  await clock.advance(60_000)
+  expect(views()).toBe(1)
+  expect(shared[`poll:${RUN_KEY}`]).toBe(clock.now())
+
+  shared[`poll:${RUN_KEY}`] = clock.now()
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await ui.press({ key: 'pr:refresh' })
+  expect(views()).toBe(2)
+  await ui.unmount()
+})
+
+test('a run with its proof done and no pending check polls every five minutes', async ($, on) => {
+  const world: PrWorld = { view: prView(), threads: [] }
+  const { calls, clock } = boot(on, prRoutes(world))
+  sharedStore(on, { [`run:${RUN_KEY}`]: storedRun({ stages: [{ id: 'proof', status: 'done' }] }) })
+  await $.session.start(START)
+  const views = () => ran(calls, 'gh', 'pr', 'view').length
+
+  await clock.advance(60_000)
+  expect(views()).toBe(1)
+  await clock.advance(4 * 60_000)
+  expect(views()).toBe(1)
+
+  world.view = prView({ statusCheckRollup: [{ __typename: 'CheckRun', name: 'e2e', status: 'IN_PROGRESS', conclusion: null }] })
+  await clock.advance(60_000)
+  expect(views()).toBe(2)
+  await clock.advance(60_000)
+  expect(views()).toBe(3)
+})
+
+const twoPrRoutes = (): Route[] => [
+  [['gh', 'pr', 'view'], argv => ({
+    stdout: JSON.stringify(argv.includes('43') ? prView({ number: 43, url: 'https://github.com/o/r/pull/43' }) : prView()),
+  })],
+  ...prRoutes({ view: prView(), threads: [prThread('T1', 'Rename this')] }).slice(1),
+]
+
+test('a reply box open on one run does not hold back polling of another', async ($, on) => {
+  const { calls, clock } = boot(on, twoPrRoutes())
+  mock.store(on)
+  await $.session.start(START)
+  await $.tool.call({ tool: TOOL, action: 'start', branch: 'feature/a', prUrl: PR_URL })
+  await $.tool.call({ tool: TOOL, action: 'start', branch: 'feature/b', prUrl: 'https://github.com/o/r/pull/43' })
+  await clock.advance(2_000)
+  const viewsOf = (number: string) => ran(calls, 'gh', 'pr', 'view').filter(argv => argv.includes(number)).length
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await ui.press({ key: 'run:o/r#feature/a' })
+  await $.tool.call({ tool: TOOL, action: 'pr', branch: 'feature/a', fresh: true })
+  await ui.press({ key: 'reply:T1' })
+  await ui.press({ key: 'run:o/r#feature/b' })
+  const before = { a: viewsOf('42'), b: viewsOf('43') }
+
+  await clock.advance(120_000)
+  expect(viewsOf('43')).toBe(before.b + 2)
+  expect(viewsOf('42')).toBe(before.a)
+  await ui.unmount()
+})
+
+test('a reply box holds back its run for ten minutes at most, scheduled refreshes included', async ($, on) => {
+  const { calls, clock } = boot(on, prRoutes(blockedWorld()))
+  mock.store(on)
+  await $.session.start(START)
+  await $.tool.call({ tool: TOOL, action: 'start', branch: 'feature/held', prUrl: PR_URL })
+  await clock.advance(2_000)
+  const views = () => ran(calls, 'gh', 'pr', 'view').length
+  expect(views()).toBe(1)
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await ui.press({ key: 'reply:T1' })
+  await $.tool.call({ tool: TOOL, action: 'stage', branch: 'feature/held', stage: 'review', status: 'running' })
+  await clock.advance(9 * 60_000)
+  expect(views()).toBe(1)
+
+  await clock.advance(70_000)
+  expect(views()).toBeGreaterThan(1)
+  const afterLapse = views()
+  await clock.advance(30_000)
+  expect(views()).toBe(afterLapse)
+  expect(await ui.find({ key: 'replyText:T1' })).toBeDefined()
+  await ui.unmount()
 })

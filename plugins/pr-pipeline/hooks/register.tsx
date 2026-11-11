@@ -6,10 +6,10 @@ import { chip, confidenceTone, gauge, INK, isGraphic, pulse, RISK_TONE, STATUS_T
 import type { Tone } from './look'
 import { card, duration, elapsed, isHuman, prCard, settingsCard, stageDetail, STATUS_GLYPH, submitPrompt, threadsCard } from './pane-pr'
 import type { PaneContext, PaneEvent } from './pane-pr'
-import { deltaReviewPrompt, failingRunIds, fixCiPrompt, prRefOf, refreshPr, staleVerdictText, syncPrompt, tick } from './pr'
+import { deltaReviewPrompt, failingRunIds, fixCiPrompt, heldKey, isPollDue, prRefOf, refreshPr, staleVerdictText, syncPrompt, tick } from './pr'
 import {
-  STAGES, closeRun, ensureHarnesses, followStoreOnce, isOpenRun, loadRuns, modelChip, pickedKey, pipelineOptions,
-  reopenRun, runConfidence, stageLabel,
+  STAGES, closeRun, ensureHarnesses, followStoreOnce, isOpenRun, loadRuns, modelChip, openRunsInRepo, pickedKey, pipelineOptions,
+  reopenRun, repoFor, runConfidence, stageLabel,
 } from './runs'
 import { ARGUMENT_HINT, classifyTicket } from './ticket'
 import { afterBash, branchMoveBefore, handleTool, INPUT_SCHEMA, TOOL_DESCRIPTION } from './tool'
@@ -18,7 +18,6 @@ const runs = atom({ plugin: 'pr-pipeline', key: 'runs' } as const, {} as Runs)
 const selectedKey = atom({ plugin: 'pr-pipeline', key: 'selectedKey' } as const, null as string | null)
 const openStage = atom({ plugin: 'pr-pipeline', key: 'openStage' } as const, null as StageId | null)
 const prStates = atom({ plugin: 'pr-pipeline', key: 'pr' } as const, {} as Record<string, PrState>)
-const replying = atom({ plugin: 'pr-pipeline', key: 'replying' } as const, null as string | null)
 const repos = atom({ plugin: 'pr-pipeline', key: 'repos' } as const, {} as Record<string, RepoRef | null>)
 
 const PANE = 'pr-pipeline'
@@ -35,11 +34,12 @@ const unmetCount = (stage: Stage): number => stage.criteria.filter(one => one.me
 const requestsChanges = (stage: Stage): boolean => stage.id === 'review' && CHANGES_REQUESTED.test(stage.summary ?? '')
 
 async function refreshIfStale($: EngineInterface): Promise<void> {
-  const key = pickedKey(await read($, runs), await read($, selectedKey))
-  if (key === null || (await read($, replying)) !== null) return
-  const state = (await read($, prStates))[key]
-  if (state !== undefined && (await $.clock.now()) - state.fetchedAt < 30_000) return
-  await refreshPr($, key, { reason: 'turn' })
+  const all = await read($, runs)
+  const key = pickedKey(all, await read($, selectedKey))
+  const run = key === null ? undefined : all[key]
+  const now = await $.clock.now()
+  if (run === undefined || run.key === (await heldKey($, now)) || !(await isPollDue($, run, now))) return
+  await refreshPr($, run.key, { reason: 'turn' })
 }
 
 async function startSession($: EngineInterface): Promise<void> {
@@ -47,6 +47,17 @@ async function startSession($: EngineInterface): Promise<void> {
   $.clock.every(60_000, () => void tick($).catch(err => $.ui.toast(String(err))))
   $.clock.every(10_000, () => void followStoreOnce($).catch(err => $.ui.toast(String(err))))
   void ensureHarnesses($).catch(err => $.ui.toast(String(err)))
+}
+
+/** Opens the pane only in a checkout of a repo with an open run, selecting its latest run. */
+async function openPaneForRepo($: EngineInterface): Promise<void> {
+  const all = await read($, runs)
+  if (!Object.values(all).some(isOpenRun)) return
+  const repo = await repoFor($, await $.session.cwd())
+  const match = repo === null ? undefined : openRunsInRepo(all, repo.slug)[0]
+  if (match === undefined) return
+  await update($, selectedKey, chosen => chosen ?? match.key)
+  await $.ui.open({ id: PANE, title: 'PR pipeline' })
 }
 
 function prAttention($: EngineInterface, run: PipelineRun, snapshot: PrSnapshot | undefined): Attention[] {
@@ -303,9 +314,9 @@ export const register: Register = (on, rawOptions) => {
       description: 'Open the PR pipeline pane; with a ticket, issue, PR or task, start the pipeline on it',
       argumentHint: ARGUMENT_HINT,
     })
-    await $.tool.register({ name: 'pipeline', description: TOOL_DESCRIPTION, isDeferred: false, inputSchema: INPUT_SCHEMA })
+    await $.tool.register({ name: 'pipeline', description: TOOL_DESCRIPTION, isDeferred: true, inputSchema: INPUT_SCHEMA })
     await startSession($)
-    void $.ui.open({ id: PANE, title: 'PR pipeline' })
+    void openPaneForRepo($).catch(err => $.ui.toast(String(err)))
     return next(e)
   })
 

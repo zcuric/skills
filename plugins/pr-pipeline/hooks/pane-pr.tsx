@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { Elements, EngineInterface, RenderChildren, RenderInput, RenderSurface } from 'claude-code'
 
-import type { Harnesses, Met, PipelineOptions, PipelineRun, PrSnapshot, PrState, PrThread, Stage, StageId, StageStatus } from '../types'
+import type { Harnesses, Met, PipelineOptions, PipelineRun, PrSnapshot, PrState, PrThread, ReplyBox, Stage, StageId, StageStatus } from '../types'
 import { mergeGuard } from './github'
 import {
   failedChecks,
@@ -37,7 +37,7 @@ import type { Tone } from './look'
 const openStage = atom({ plugin: 'pr-pipeline', key: 'openStage' } as const, null as StageId | null)
 const prStates = atom({ plugin: 'pr-pipeline', key: 'pr' } as const, {} as Record<string, PrState>)
 const openThreads = atom({ plugin: 'pr-pipeline', key: 'openThreads' } as const, {} as Record<string, boolean>)
-const replying = atom({ plugin: 'pr-pipeline', key: 'replying' } as const, null as string | null)
+const replying = atom({ plugin: 'pr-pipeline', key: 'replying' } as const, null as ReplyBox | null)
 const drafts = atom({ plugin: 'pr-pipeline', key: 'drafts' } as const, {} as Record<string, string>)
 const prBusy = atom({ plugin: 'pr-pipeline', key: 'prBusy' } as const, null as string | null)
 const harnesses = atom({ plugin: 'pr-pipeline', key: 'harnesses' } as const, null as Harnesses | null)
@@ -298,8 +298,12 @@ export async function threadsCard($: EngineInterface, e: PaneEvent, ctx: PaneCon
     // The runtime table can carry Input on mobile, which draws no field yet.
     if (e.surface === 'mobile' || !('Input' in els)) return <Text key={`replyHint:${thread.id}`} dimColor>Reply from the desktop app</Text>
     const { Input } = els
-    if (replyingTo !== thread.id) {
-      return <Button key={`reply:${thread.id}`} plain label="Reply" onPress={() => update($, replying, () => thread.id)} />
+    if (replyingTo?.threadId !== thread.id) {
+      const openBox = async () => {
+        const openedAt = await $.clock.now()
+        await update($, replying, () => ({ key, threadId: thread.id, openedAt }))
+      }
+      return <Button key={`reply:${thread.id}`} plain label="Reply" onPress={openBox} />
     }
     return (
       <Box key={`replyBox:${thread.id}`} flexDirection="column" rowGap={0}>

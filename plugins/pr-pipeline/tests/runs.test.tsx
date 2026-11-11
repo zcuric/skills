@@ -1,27 +1,16 @@
 import { expect, mock, test } from 'claude-code/testing'
 
 import type { Engine } from 'claude-code/testing'
-import type { On } from 'claude-code'
 
-import type { Runs } from '../types'
+import type { PipelineRun, Runs, StageId, StageStatus } from '../types'
 import { pruneRuns } from '../hooks/runs'
 import { parseBranchMove } from '../hooks/tool'
-import { boot, PANE, PR_URL, prRoutes, prView, ran, START, TOOL } from './kit'
+import { boot, PANE, PR_URL, prRoutes, prView, ran, sharedStore, START, storedRuns, TOOL } from './kit'
 import type { Route } from './kit'
 
 const status = async ($: Engine, branch: string) => {
   const answer = await $.tool.call({ tool: TOOL, action: 'status', branch })
   return answer.deny !== undefined ? null : JSON.parse(String(answer.result))
-}
-
-const sharedStore = (on: On): Record<string, unknown> => {
-  const shared: Record<string, unknown> = {}
-  on('store.get', (_$, e) => ({ value: shared[e.key] }))
-  on('store.set', (_$, e) => {
-    shared[e.key] = JSON.parse(JSON.stringify(e.value))
-    return { value: undefined }
-  })
-  return shared
 }
 
 test('a run is keyed by repo and branch', async ($, on) => {
@@ -212,7 +201,7 @@ test('a branch that was not created, or that already has a run, leaves the run w
 test('git branch -m moves the run of the renamed branch, PR and all', async ($, on) => {
   const git = { branch: 'feature/old-name' }
   boot(on, [movingBranch(git)])
-  mock.store(on)
+  const shared = sharedStore(on)
   on('tool.call', { tool: 'Bash' }, bashThatSwitches(git, 'feature/new-name'))
   await $.session.start(START)
   await $.tool.call({ tool: TOOL, action: 'start', ticket: 'HWEPD-22', prUrl: PR_URL })
@@ -222,6 +211,7 @@ test('git branch -m moves the run of the renamed branch, PR and all', async ($, 
   expect(moved.ticket).toBe('HWEPD-22')
   expect(moved.prUrl).toBe(PR_URL)
   expect(await status($, 'feature/old-name')).toBeNull()
+  expect(Object.keys(storedRuns(shared))).toEqual(['o/r#feature/new-name'])
 })
 
 test('starting a branch on a different ticket starts a fresh run', async ($, on) => {
@@ -243,19 +233,12 @@ test('starting a branch on a different ticket starts a fresh run', async ($, on)
 
 test('an update starts from what another session wrote to the store', async ($, on) => {
   boot(on)
-  const shared: Record<string, unknown> = {}
-  on('store.get', (_$, e) => ({ value: shared[e.key] }))
-  on('store.set', (_$, e) => {
-    shared[e.key] = JSON.parse(JSON.stringify(e.value))
-    return { value: undefined }
-  })
+  const shared = sharedStore(on)
   await $.session.start(START)
   await $.tool.call({ tool: TOOL, action: 'start', branch: 'feature/shared', ticket: 'HWEPD-25' })
 
-  const stored = JSON.parse(JSON.stringify(shared.runs)) as Runs
-  const theirs = stored['o/r#feature/shared']
-  if (theirs === undefined) throw new Error('run not stored')
-  shared.runs = { ...stored, 'o/r#feature/shared': { ...theirs, title: 'Written by the other session' } }
+  const theirs = shared['run:o/r#feature/shared'] as Runs[string]
+  shared['run:o/r#feature/shared'] = { ...theirs, title: 'Written by the other session', savedAt: (theirs.savedAt ?? 0) + 1 }
 
   await $.tool.call({ tool: TOOL, action: 'stage', branch: 'feature/shared', stage: 'enhance', status: 'done' })
   const run = await status($, 'feature/shared')
@@ -263,14 +246,17 @@ test('an update starts from what another session wrote to the store', async ($, 
   expect(run.stages[0].status).toBe('done')
 })
 
-test('a running stage keeps a run from pruning only while it was updated this week', () => {
+test('only closed runs prune: a week after closing, or a month after the last update', () => {
   const day = 86_400_000
   const now = 60 * day
-  const running = (key: string, updatedAt: number) => ({
-    key, branch: key, updatedAt, stages: [{ id: 'review' as const, status: 'running' as const, did: [], flags: [], notes: [], criteria: [], links: [] }],
-  })
-  const pruned = pruneRuns({ stale: running('stale', now - 31 * day), recent: running('recent', now - 2 * day) }, now, null)
-  expect(Object.keys(pruned)).toEqual(['recent'])
+  const run = (key: string, updatedAt: number, closedAt?: number) => ({ key, branch: key, updatedAt, closedAt, stages: [] })
+  const pruned = pruneRuns({
+    idleOpen: run('idleOpen', now - 50 * day),
+    closedLastWeek: run('closedLastWeek', now - 9 * day, now - 8 * day),
+    closedYesterday: run('closedYesterday', now - 2 * day, now - day),
+    staleClosed: run('staleClosed', now - 31 * day, now - 2 * day),
+  }, now)
+  expect(Object.keys(pruned)).toEqual(['idleOpen', 'closedYesterday'])
 })
 
 test('the poll also refreshes the other run fetched longest ago, at most every ten minutes, so its merge closes it', async ($, on) => {
@@ -412,7 +398,7 @@ test('stage, link and status on a branch with no run are refused and create noth
   const link = await $.tool.call({ tool: TOOL, action: 'link', branch: 'O/r#feature/none', stage: 'pr', href: PR_URL })
   expect(link.deny).toBe(expected)
   expect((await $.tool.call({ tool: TOOL, action: 'status', branch: 'O/r#feature/none' })).deny).toBe(expected)
-  expect(Object.keys(shared.runs as Runs)).toEqual(['o/r#feature/a'])
+  expect(Object.keys(storedRuns(shared))).toEqual(['o/r#feature/a'])
 })
 
 test('gh pr create in a session with no run creates none', async ($, on) => {
@@ -422,7 +408,7 @@ test('gh pr create in a session with no run creates none', async ($, on) => {
   await $.session.start(START)
   await $.tool.call({ tool: 'Bash', command: 'gh pr create --title t --body b' })
 
-  expect(shared.runs ?? {}).toEqual({})
+  expect(storedRuns(shared)).toEqual({})
   expect((await $.tool.call({ tool: TOOL, action: 'status' })).deny).toMatch(/^pr-pipeline: no run for o\/r#feature\/current\. Open runs: none\./)
 })
 
@@ -437,7 +423,7 @@ test('a repo that differs only by case resolves to the run or the remote it name
   const started = await $.tool.call({ tool: TOOL, action: 'start', branch: 'feature/cased', repo: 'O/R', ticket: 'HWEPD-36' })
   expect(started.result).toMatch(/^Pipeline run opened for o\/r#feature\/cased /)
 
-  expect(Object.keys(shared.runs as Runs).sort()).toEqual(['Org/Api#main', 'o/r#feature/cased'])
+  expect(Object.keys(storedRuns(shared)).sort()).toEqual(['Org/Api#main', 'o/r#feature/cased'])
   const api = await status($, 'Org/Api#main')
   expect(api.repo).toBe('Org/Api')
   expect(api.stages[0].status).toBe('done')
@@ -458,4 +444,156 @@ test('git worktree add -b moves the run onto the branch it creates', async ($, o
   expect(moved.ticket).toBe('HWEPD-37')
   expect(await status($, 'main')).toBeNull()
   expect(parseBranchMove('git worktree add ../wt -B feature/x origin/main')).toEqual({ kind: 'worktree', to: 'feature/x' })
+})
+
+const withStatus = (run: PipelineRun, id: StageId, to: StageStatus): PipelineRun =>
+  ({ ...run, stages: run.stages.map(stage => (stage.id === id ? { ...stage, status: to } : stage)) })
+
+const statusOf = (run: unknown, id: StageId): StageStatus | undefined =>
+  (run as PipelineRun).stages.find(stage => stage.id === id)?.status
+
+test('two sessions recording at once keep each other\'s updates, on different runs and on the same run', async ($, on) => {
+  const { clock } = boot(on)
+  const shared = sharedStore(on)
+  await $.session.start(START)
+  await $.tool.call({ tool: TOOL, action: 'start', branch: 'feature/x', ticket: 'X-1' })
+  await $.tool.call({ tool: TOOL, action: 'start', branch: 'feature/y', ticket: 'Y-1' })
+  const theirY = shared['run:o/r#feature/y'] as PipelineRun
+
+  await clock.advance(1_000)
+  await $.tool.call({ tool: TOOL, action: 'stage', branch: 'feature/x', stage: 'enhance', status: 'done' })
+  shared['run:o/r#feature/y'] = { ...withStatus(theirY, 'enhance', 'running'), updatedAt: clock.now(), savedAt: clock.now() }
+  await clock.advance(1_000)
+  await $.tool.call({ tool: TOOL, action: 'stage', branch: 'feature/x', stage: 'implement', status: 'running' })
+
+  expect(statusOf(shared['run:o/r#feature/x'], 'enhance')).toBe('done')
+  expect(statusOf(shared['run:o/r#feature/x'], 'implement')).toBe('running')
+  expect(statusOf(shared['run:o/r#feature/y'], 'enhance')).toBe('running')
+  expect((await status($, 'feature/y')).stages[0].status).toBe('running')
+
+  await clock.advance(1_000)
+  const ourX = shared['run:o/r#feature/x'] as PipelineRun
+  shared['run:o/r#feature/x'] = { ...ourX, title: 'Theirs', updatedAt: clock.now(), savedAt: clock.now() }
+  await $.tool.call({ tool: TOOL, action: 'stage', branch: 'feature/x', stage: 'implement', did: 'Mine' })
+  const merged = shared['run:o/r#feature/x'] as PipelineRun
+  expect(merged.title).toBe('Theirs')
+  expect(merged.stages.find(stage => stage.id === 'implement')?.did).toEqual(['Mine'])
+
+  shared['run:o/r#feature/x'] = { ...ourX, title: 'Stale', savedAt: 1 }
+  await clock.advance(10_000)
+  expect((await status($, 'feature/x')).title).toBe('Theirs')
+  await $.tool.call({ tool: TOOL, action: 'stage', branch: 'feature/x', stage: 'implement', did: 'Mine again' })
+  expect((shared['run:o/r#feature/x'] as PipelineRun).title).toBe('Theirs')
+})
+
+test('a run another session closed is closed here too, and a run it deleted leaves', async ($, on) => {
+  const { clock } = boot(on)
+  const shared = sharedStore(on)
+  await $.session.start(START)
+  await $.tool.call({ tool: TOOL, action: 'start', branch: 'feature/a', ticket: 'A-1' })
+  await $.tool.call({ tool: TOOL, action: 'start', branch: 'feature/b', ticket: 'B-1' })
+
+  const theirs = shared['run:o/r#feature/a'] as PipelineRun
+  shared['run:o/r#feature/a'] = { ...theirs, closedAt: clock.now(), savedAt: clock.now() + 1 }
+  delete shared['run:o/r#feature/b']
+  await clock.advance(10_000)
+  expect((await status($, 'feature/a')).closedAt).toBeDefined()
+  expect(await status($, 'feature/b')).toBeNull()
+})
+
+test('the single legacy store key splits into one key per run, keeping a newer per-run copy', async ($, on) => {
+  boot(on)
+  const shared = sharedStore(on, {
+    runs: {
+      'o/r#feature/a': { key: 'o/r#feature/a', branch: 'feature/a', repo: 'o/r', ticket: 'OLD', updatedAt: 1, stages: [] },
+      'feature/bare': { branch: 'feature/bare', ticket: 'BARE', updatedAt: 1, stages: [] },
+    },
+    'run:o/r#feature/a': { key: 'o/r#feature/a', branch: 'feature/a', repo: 'o/r', ticket: 'NEWER', updatedAt: 5, savedAt: 5, stages: [] },
+  })
+  await $.session.start(START)
+
+  expect(shared.runs).toBeUndefined()
+  expect(Object.keys(storedRuns(shared)).sort()).toEqual(['feature/bare', 'o/r#feature/a'])
+  expect((await status($, 'o/r#feature/a')).ticket).toBe('NEWER')
+  expect((await status($, 'feature/bare')).ticket).toBe('BARE')
+})
+
+test('an open run is never pruned, however many runs there are; a closed one goes a week after closing', async ($, on) => {
+  const day = 86_400_000
+  const now = 60 * day
+  boot(on, [], { now })
+  const open = Object.fromEntries(Array.from({ length: 30 }, (_, at) => [
+    `run:o/r#feature/open-${at}`,
+    { key: `o/r#feature/open-${at}`, branch: `feature/open-${at}`, repo: 'o/r', updatedAt: now - day - at, stages: [] },
+  ]))
+  const shared = sharedStore(on, {
+    ...open,
+    'run:o/r#feature/old-open': { key: 'o/r#feature/old-open', branch: 'feature/old-open', repo: 'o/r', updatedAt: now - 40 * day, stages: [] },
+    'run:o/r#feature/closed': { key: 'o/r#feature/closed', branch: 'feature/closed', repo: 'o/r', updatedAt: now - 9 * day, closedAt: now - 8 * day, stages: [] },
+    'poll:o/r#feature/closed': now - 8 * day,
+  })
+  await $.session.start(START)
+
+  const kept = Object.keys(storedRuns(shared))
+  expect(kept).toHaveLength(31)
+  expect(kept).toContain('o/r#feature/old-open')
+  expect(shared['run:o/r#feature/closed']).toBeUndefined()
+  expect(shared['poll:o/r#feature/closed']).toBeUndefined()
+})
+
+test('the pane opens at session start only in a checkout of a repo with an open run', async ($, on) => {
+  const { clock, opened } = boot(on)
+  sharedStore(on, {
+    'run:x/other#feature/a': { key: 'x/other#feature/a', branch: 'feature/a', repo: 'x/other', updatedAt: 1, stages: [] },
+    'run:O/R#feature/closed': { key: 'O/R#feature/closed', branch: 'feature/closed', repo: 'O/R', updatedAt: 1, closedAt: 1, stages: [] },
+  })
+  await $.session.start(START)
+  await clock.settle()
+  expect(opened).toEqual([])
+
+  await $.tool.call({ tool: TOOL, action: 'start', branch: 'feature/new', ticket: 'HWEPD-40' })
+  await clock.settle()
+  expect(opened).toEqual(['pr-pipeline'])
+})
+
+test('the pane opens at session start on the latest open run of this repo, whatever its case', async ($, on) => {
+  const { clock, opened } = boot(on)
+  sharedStore(on, {
+    'run:x/other#feature/a': { key: 'x/other#feature/a', branch: 'feature/a', repo: 'x/other', updatedAt: 9, stages: [] },
+    'run:O/R#feature/b': { key: 'O/R#feature/b', branch: 'feature/b', repo: 'O/R', ticket: 'HWEPD-41', updatedAt: 2, stages: [] },
+  })
+  await $.session.start(START)
+  await clock.settle()
+  expect(opened).toEqual(['pr-pipeline'])
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(await ui.find({ type: 'Text', text: /^HWEPD-41$/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('the pipeline tool is deferred behind tool search', async ($, on) => {
+  const { tools } = boot(on)
+  mock.store(on)
+  await $.session.start(START)
+  expect(tools).toEqual([{ name: 'pipeline', isDeferred: true }])
+})
+
+test('closing a run that is not on view keeps the open stage and the status line', async ($, on) => {
+  const { statuses } = boot(on)
+  mock.store(on)
+  await $.session.start(START)
+  await $.tool.call({ tool: TOOL, action: 'start', branch: 'feature/a', ticket: 'HWEPD-42' })
+  await $.tool.call({ tool: TOOL, action: 'start', branch: 'feature/b', ticket: 'HWEPD-43' })
+  await $.tool.call({ tool: TOOL, action: 'stage', branch: 'feature/b', stage: 'review', status: 'running' })
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await ui.press({ key: 'stage:review' })
+  expect(await ui.find({ key: 'back' })).toBeDefined()
+
+  await $.tool.call({ tool: TOOL, action: 'close', branch: 'feature/a' })
+  expect(statuses.at(-1)).toBe('pipeline: AI review')
+  expect(await ui.find({ key: 'back' })).toBeDefined()
+
+  await $.tool.call({ tool: TOOL, action: 'close', branch: 'feature/b' })
+  expect(statuses.at(-1)).toBeUndefined()
+  await ui.unmount()
 })

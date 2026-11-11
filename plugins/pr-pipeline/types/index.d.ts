@@ -171,9 +171,14 @@ export type PipelineRun = {
   /** Set by the first start or stage write */
   startedAt?: number
   updatedAt: number
+  /** When a session last wrote this run to the store; the newer copy wins when sessions merge */
+  savedAt?: number
 }
 
 export type Runs = Record<string, PipelineRun>
+
+/** The thread whose reply box is open, on which run, and since when */
+export type ReplyBox = { key: string; threadId: string; openedAt: number }
 
 /** The plugin's userConfig, as `register(on, options)` receives it */
 export type PipelineOptions = {
@@ -194,8 +199,8 @@ declare module 'claude-code' {
       openStage: StageId | null
       pr: Record<string, PrState>
       openThreads: Record<string, boolean>
-      /** Thread id whose reply box is open; polling pauses while set */
-      replying: string | null
+      /** The open reply box; its run's refresh holds for up to ten minutes */
+      replying: ReplyBox | null
       /** Reply drafts by thread id */
       drafts: Record<string, string>
       /** Run key of the PR action in flight (merge, rerun, reply, resolve) */

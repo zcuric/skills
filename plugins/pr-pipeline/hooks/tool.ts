@@ -315,6 +315,7 @@ async function startAnswer(
   if (isNewTicket) await update($, prStates, all => Object.fromEntries(Object.entries(all).filter(([known]) => known !== key)))
   await update($, selectedKey, () => key)
   await update($, openStage, () => null)
+  void $.ui.open({ id: 'pr-pipeline', title: 'PR pipeline' }).catch(() => undefined)
   if (run.prUrl !== before?.prUrl) await schedulePrRefresh($, key, 2_000)
   return {
     result: `Pipeline run opened for ${key}${run.ticket ? ` (${run.ticket})` : ''}. ` +

@@ -1,14 +1,14 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Timer } from 'claude-code'
 
-import type { MergeMethod, PipelineRun, PrRef, PrSnapshot, PrState, PrSummary, PrThread, Runs } from '../types'
+import type { MergeMethod, PipelineRun, PrRef, PrSnapshot, PrState, PrSummary, PrThread, ReplyBox, Runs } from '../types'
 import { fetchPr, mergePr, parsePrUrl, replyToThread, rerunFailed, resolveThread, toSummary } from './github'
-import { changeRun, closeRun, pickedKey } from './runs'
+import { changeRun, closeRun, pickedKey, pollStoreKey, pruneStore } from './runs'
 
 const runs = atom({ plugin: 'pr-pipeline', key: 'runs' } as const, {} as Runs)
 const selectedKey = atom({ plugin: 'pr-pipeline', key: 'selectedKey' } as const, null as string | null)
 const prStates = atom({ plugin: 'pr-pipeline', key: 'pr' } as const, {} as Record<string, PrState>)
-const replying = atom({ plugin: 'pr-pipeline', key: 'replying' } as const, null as string | null)
+const replying = atom({ plugin: 'pr-pipeline', key: 'replying' } as const, null as ReplyBox | null)
 const drafts = atom({ plugin: 'pr-pipeline', key: 'drafts' } as const, {} as Record<string, string>)
 const prBusy = atom({ plugin: 'pr-pipeline', key: 'prBusy' } as const, null as string | null)
 
@@ -16,6 +16,9 @@ const DEBOUNCE_MS = 15_000
 const STUCK_FETCH_MS = 45_000
 export const CLOSE_AFTER_MS = 5 * 60_000
 const OTHER_RUN_POLL_MS = 10 * 60_000
+const POLL_GAP_MS = 55_000
+const SETTLED_POLL_MS = 5 * 60_000
+export const REPLY_HOLD_MS = 10 * 60_000
 
 const pendingRefreshes = new Map<string, { timer: Timer; dueAt: number }>()
 const rerunDone = new Set<string>()
@@ -54,6 +57,7 @@ export async function refreshPr(
   if (!options.fresh && current?.isFetching) return current
   if (!options.fresh && current !== undefined && now - current.fetchedAt < DEBOUNCE_MS) return current
   await update($, prStates, all => ({ ...all, [key]: { ...all[key], fetchedAt: now, isFetching: true } }))
+  await $.store.set(pollStoreKey(key), now)
 
   const fetched = await fetchPr($, ref, now, run.cwd)
   if (!fetched.ok) {
@@ -79,9 +83,35 @@ export async function refreshPr(
   return next
 }
 
+/** The run an open reply box holds back from refreshing, until ten minutes after the box opened. */
+export async function heldKey($: EngineInterface, now: number): Promise<string | null> {
+  const box = await read($, replying)
+  if (box === null || now - box.openedAt >= REPLY_HOLD_MS) return null
+  return box.key
+}
+
+/** Proof done and no check pending: nothing left to watch closely. */
+const isSettled = (run: PipelineRun, snapshot: PrSnapshot | undefined): boolean => {
+  const counts = snapshot?.counts ?? run.pr?.counts
+  return run.stages.some(stage => stage.id === 'proof' && stage.status === 'done') && counts !== undefined && counts.checksPending === 0
+}
+
+/** When any session last fetched the run's PR. */
+async function lastPolledAt($: EngineInterface, run: PipelineRun): Promise<number> {
+  const shared = await $.store.get(pollStoreKey(run.key))
+  const local = (await read($, prStates))[run.key]?.fetchedAt ?? 0
+  return Math.max(typeof shared === 'number' ? shared : 0, local, run.pr?.fetchedAt ?? 0)
+}
+
+/** Due once no session fetched it for 55 s, or 5 min when settled. */
+export async function isPollDue($: EngineInterface, run: PipelineRun, now: number): Promise<boolean> {
+  const gap = isSettled(run, (await read($, prStates))[run.key]?.snapshot) ? SETTLED_POLL_MS : POLL_GAP_MS
+  return now - (await lastPolledAt($, run)) >= gap
+}
+
 async function firePendingRefresh($: EngineInterface, key: string): Promise<void> {
   pendingRefreshes.delete(key)
-  if ((await read($, replying)) !== null) {
+  if ((await heldKey($, await $.clock.now())) === key) {
     await schedulePrRefresh($, key, 10_000)
     return
   }
@@ -144,17 +174,17 @@ export async function tick($: EngineInterface): Promise<void> {
   const now = await $.clock.now()
   await resetStuckFetches($, now)
   await closeEndedRuns($, now)
-  if ((await read($, replying)) !== null) return
+  await pruneStore($)
+  const held = await heldKey($, now)
   const all = await read($, runs)
   const key = pickedKey(all, await read($, selectedKey))
-  if (key !== null && isPolled(all[key])) await refreshPr($, key, { reason: 'poll' })
-  const states = await read($, prStates)
-  const fetchedAt = (run: PipelineRun): number => states[run.key]?.fetchedAt ?? run.pr?.fetchedAt ?? 0
-  const stalest = Object.values(all)
-    .filter(run => run.key !== key && run.mergedAt === undefined && isPolled(run))
-    .sort((a, b) => fetchedAt(a) - fetchedAt(b))[0]
-  if (stalest === undefined || now - fetchedAt(stalest) < OTHER_RUN_POLL_MS) return
-  await refreshPr($, stalest.key, { reason: 'poll-other' })
+  const selected = key === null ? undefined : all[key]
+  if (isPolled(selected) && selected.key !== held && (await isPollDue($, selected, now))) await refreshPr($, selected.key, { reason: 'poll' })
+  const others = Object.values(all).filter(run => run.key !== key && run.key !== held && run.mergedAt === undefined && isPolled(run))
+  const polled = await Promise.all(others.map(async run => ({ run, at: await lastPolledAt($, run) })))
+  const stalest = polled.sort((a, b) => a.at - b.at)[0]
+  if (stalest === undefined || now - stalest.at < OTHER_RUN_POLL_MS) return
+  await refreshPr($, stalest.run.key, { reason: 'poll-other' })
 }
 
 export const failedChecks = (snapshot: PrSnapshot): PrSnapshot['checks'] =>

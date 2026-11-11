@@ -7,6 +7,8 @@ description: Drive a ticket (Jira, GitHub issue, Linear, or a task described in 
 
 Take one ticket from its description to a PR that a colleague can approve without re-doing the work. Every stage reports to the `pr-pipeline` pane through the `mcp__pr-pipeline__pipeline` tool, so the person and their colleagues can watch and click into each stage.
 
+The tool is deferred: when `mcp__pr-pipeline__pipeline` is not loaded, load it first with ToolSearch `select:mcp__pr-pipeline__pipeline`.
+
 The prompt usually comes from `/pipeline` and carries a hint: `Run the pr-pipeline:run skill for <ticket> (tracker: <t>, url: <u>).`, or for a task in words, `… for this task (tracker: text): <text>`. Without a hint, treat the argument the same way `/pipeline` would. A PR instead of a ticket (`(tracker: pr, url: …)`, or a PR number or URL): read `open-pr.md` from this skill's directory before stage 1.
 
 ## Recording

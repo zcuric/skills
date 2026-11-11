@@ -18,7 +18,15 @@ import type {
 } from '../types'
 import { currentBranch, detectHarnesses, repoRef } from './github'
 
-export const STORE_KEY = 'runs'
+/** Before one key per run, every run sat under this one key. */
+const LEGACY_STORE_KEY = 'runs'
+const RUN_PREFIX = 'run:'
+const POLL_PREFIX = 'poll:'
+
+export const runStoreKey = (key: string): string => `${RUN_PREFIX}${key}`
+
+/** When any session last fetched the run's PR; kept apart from the run so a poll never bumps it. */
+export const pollStoreKey = (key: string): string => `${POLL_PREFIX}${key}`
 
 export const STAGES: ReadonlyArray<{ id: StageId; label: string; blurb: string }> = [
   { id: 'enhance', label: 'Enhance', blurb: 'Ticket read, criteria extracted, spec posted, task class picked' },
@@ -39,7 +47,6 @@ export const TRACKER_SETTINGS: ReadonlyArray<Tracker | 'auto'> = ['auto', 'jira'
 export const MERGE_METHODS: readonly MergeMethod[] = ['squash', 'merge', 'rebase']
 export const CLAUDE_MODELS = ['opus', 'sonnet', 'haiku', 'fable'] as const
 
-const MAX_RUNS = 25
 const DAY_MS = 86_400_000
 const HARNESS_TTL_MS = 10 * 60_000
 
@@ -111,6 +118,12 @@ export const pickedKey = (all: Runs, chosen: string | null): string | null => {
     .sort((a, b) => b.updatedAt - a.updatedAt)[0]?.key ?? null
 }
 
+/** Open runs of the repo `slug` names, ignoring case, most recently updated first. */
+export const openRunsInRepo = (all: Runs, slug: string): PipelineRun[] =>
+  Object.values(all)
+    .filter(run => isOpenRun(run) && (run.repo ?? repoOfKey(run.key))?.toLowerCase() === slug.toLowerCase())
+    .sort((a, b) => b.updatedAt - a.updatedAt)
+
 export async function repoFor($: EngineInterface, cwd: string): Promise<RepoRef | null> {
   const cache = await read($, repos)
   if (cwd in cache) return cache[cwd] ?? null
@@ -163,17 +176,21 @@ export async function resolveRun(
 /** Never overwrites a run already at `to`. */
 export async function rekeyRun($: EngineInterface, from: string, to: string, repo: RepoRef | null): Promise<boolean> {
   await followStoreOnce($)
-  let isMoved = false
+  const now = await $.clock.now()
+  let moved: PipelineRun | undefined
   await update($, runs, all => {
     const moving = all[from]
     if (moving === undefined || all[to] !== undefined) return all
-    isMoved = true
     const { [from]: _dropped, ...rest } = all
-    return { ...rest, [to]: { ...moving, key: to, branch: branchOfKey(to), repo: moving.repo ?? repo?.slug, host: moving.host ?? repo?.host } }
+    moved = {
+      ...moving, key: to, branch: branchOfKey(to), repo: moving.repo ?? repo?.slug, host: moving.host ?? repo?.host, savedAt: nextSavedAt(moving, now),
+    }
+    return { ...rest, [to]: moved }
   })
-  if (!isMoved) return false
+  if (moved === undefined) return false
   await update($, selectedKey, chosen => (chosen === from ? to : chosen))
-  await persist($)
+  await writeRun($, moved)
+  await forgetRun($, from)
   return true
 }
 
@@ -187,23 +204,31 @@ export async function changeRun(
   const now = await $.clock.now()
   let changed: PipelineRun | undefined
   await update($, runs, all => {
-    if (all[key] === undefined && options.create !== true) return all
-    const existing = all[key] !== undefined ? normaliseRun(all[key], key) : freshRun(key, now)
+    const previous = all[key]
+    if (previous === undefined && options.create !== true) return all
+    const existing = previous !== undefined ? normaliseRun(previous, key) : freshRun(key, now)
     const next = fn(existing)
-    changed = options.touch === false ? next : { ...next, startedAt: next.startedAt ?? now, updatedAt: now }
+    const touched = options.touch === false ? next : { ...next, startedAt: next.startedAt ?? now, updatedAt: now }
+    if (previous !== undefined && sameRun(touched, previous)) {
+      changed = previous
+      return all
+    }
+    changed = { ...touched, savedAt: nextSavedAt(previous, now) }
     return { ...all, [key]: changed }
   })
   if (changed === undefined) throw new Error(`no run for ${key}`)
-  await persist($)
+  await writeRun($, changed)
   return changed
 }
 
-/** Moves the selection off a closed run, to the most recently updated open one. */
+/** Moves the selection off a closed run, to the most recently updated open one; the stage detail and status line belong to the viewed run only. */
 export async function closeRun($: EngineInterface, key: string): Promise<PipelineRun> {
+  const viewed = pickedKey(await read($, runs), await read($, selectedKey))
   const now = await $.clock.now()
   const closed = await changeRun($, key, run => ({ ...run, closedAt: run.closedAt ?? now }), { touch: false })
   const all = await read($, runs)
   await update($, selectedKey, chosen => (chosen === key || chosen === null ? pickedKey(all, null) : chosen))
+  if (viewed !== key) return closed
   await update($, openStage, () => null)
   $.ui.status(undefined)
   return closed
@@ -216,49 +241,104 @@ export async function reopenRun($: EngineInterface, key: string): Promise<void> 
   await update($, openStage, () => null)
 }
 
-const hasRunningStage = (run: PipelineRun): boolean => run.stages.some(stage => stage.status === 'running')
+/** Only a closed run goes: a week after it closed, or a month after its last update. */
+const isPrunable = (run: PipelineRun, now: number): boolean =>
+  run.closedAt !== undefined && (now - run.closedAt > 7 * DAY_MS || now - run.updatedAt > 30 * DAY_MS)
 
-export const pruneRuns = (all: Runs, now: number, keep: string | null): Runs => {
-  const isKept = (run: PipelineRun): boolean => run.key === keep || (hasRunningStage(run) && now - run.updatedAt <= 7 * DAY_MS)
-  const fresh = Object.values(all).filter(run => {
-    if (isKept(run)) return true
-    if (now - run.updatedAt > 30 * DAY_MS) return false
-    return run.closedAt === undefined || now - run.closedAt <= 7 * DAY_MS
-  })
-  const ordered = fresh.sort((a, b) => Number(isKept(b)) - Number(isKept(a)) || b.updatedAt - a.updatedAt)
-  return Object.fromEntries(ordered.slice(0, Math.max(MAX_RUNS, ordered.filter(isKept).length)).map(run => [run.key, run]))
+export const pruneRuns = (all: Runs, now: number): Runs =>
+  Object.fromEntries(Object.entries(all).filter(([, run]) => !isPrunable(run, now)))
+
+const savedAtOf = (run: PipelineRun): number => run.savedAt ?? run.updatedAt
+
+/** Later than the copy it replaces, so this write wins the next merge in every session. */
+const nextSavedAt = (previous: PipelineRun | undefined, now: number): number =>
+  previous === undefined ? now : Math.max(now, savedAtOf(previous) + 1)
+
+const sameRun = (a: PipelineRun, b: PipelineRun): boolean =>
+  JSON.stringify({ ...a, savedAt: 0 }) === JSON.stringify({ ...b, savedAt: 0 })
+
+/** JSON text of each run key as this session last read or wrote it. */
+const seen = new Map<string, string>()
+
+async function writeRun($: EngineInterface, run: PipelineRun): Promise<void> {
+  const storeKey = runStoreKey(run.key)
+  const text = JSON.stringify(run)
+  if (seen.get(storeKey) === text) return
+  seen.set(storeKey, text)
+  await $.store.set(storeKey, run)
 }
 
-let lastStoreText: string | undefined
+async function forgetRun($: EngineInterface, key: string): Promise<void> {
+  seen.delete(runStoreKey(key))
+  await $.store.delete(runStoreKey(key))
+  await $.store.delete(pollStoreKey(key))
+}
 
-export async function persist($: EngineInterface): Promise<void> {
-  const now = await $.clock.now()
-  const keep = await read($, selectedKey)
-  const all = await read($, runs)
-  const pruned = pruneRuns(all, now, keep)
-  if (Object.keys(pruned).length !== Object.keys(all).length) {
-    await update($, runs, current => Object.fromEntries(Object.entries(current).filter(([key]) => key in pruned)))
+/** Splits the single legacy key into one key per run, keeping a newer per-run copy, then deletes it. */
+async function migrateLegacyStore($: EngineInterface): Promise<void> {
+  const legacy = await $.store.get(LEGACY_STORE_KEY)
+  if (legacy === undefined) return
+  for (const run of Object.values(normaliseRuns(legacy))) {
+    const stored = await $.store.get(runStoreKey(run.key))
+    if (stored !== undefined && savedAtOf(stored as PipelineRun) >= savedAtOf(run)) continue
+    await $.store.set(runStoreKey(run.key), run)
   }
-  const text = JSON.stringify(pruned)
-  if (text === lastStoreText) return
-  lastStoreText = text
-  await $.store.set(STORE_KEY, pruned)
+  await $.store.delete(LEGACY_STORE_KEY)
+}
+
+type StoreChanges = { changed: Runs; gone: string[] }
+
+/** The runs whose stored text differs from what this session last saw, and the run keys deleted since; null when nothing moved. */
+async function readStoreChanges($: EngineInterface): Promise<StoreChanges | null> {
+  await migrateLegacyStore($)
+  const changed: Runs = {}
+  const present = new Set<string>()
+  for (const storeKey of await $.store.keys()) {
+    if (!storeKey.startsWith(RUN_PREFIX)) continue
+    const value = await $.store.get(storeKey)
+    if (value === undefined) continue
+    present.add(storeKey)
+    const text = JSON.stringify(value)
+    if (seen.get(storeKey) === text) continue
+    seen.set(storeKey, text)
+    const key = storeKey.slice(RUN_PREFIX.length)
+    changed[key] = normaliseRun(value as PipelineRun, key)
+  }
+  const gone = [...seen.keys()].filter(storeKey => !present.has(storeKey))
+  gone.forEach(storeKey => seen.delete(storeKey))
+  if (Object.keys(changed).length === 0 && gone.length === 0) return null
+  return { changed, gone: gone.map(storeKey => storeKey.slice(RUN_PREFIX.length)) }
+}
+
+/** Per run, the copy saved last wins; this session's copy wins a tie. */
+const mergeRuns = (local: Runs, { changed, gone }: StoreChanges): Runs => {
+  const merged = Object.fromEntries(Object.entries(local).filter(([key]) => !gone.includes(key)))
+  for (const [key, theirs] of Object.entries(changed)) {
+    const ours = merged[key]
+    if (ours === undefined || savedAtOf(theirs) > savedAtOf(ours)) merged[key] = theirs
+  }
+  return merged
 }
 
 export async function loadRuns($: EngineInterface): Promise<void> {
-  const stored = await $.store.get(STORE_KEY)
-  lastStoreText = JSON.stringify(stored ?? {})
-  if (stored === undefined) return
-  await update($, runs, () => normaliseRuns(stored))
+  seen.clear()
+  await followStoreOnce($)
+  await pruneStore($)
 }
 
-/** Picks up what a linked session wrote to the store since this one last read or wrote it. */
+/** Picks up what other sessions wrote to the store since this one last read or wrote it. */
 export async function followStoreOnce($: EngineInterface): Promise<void> {
-  const stored = await $.store.get(STORE_KEY)
-  const text = JSON.stringify(stored ?? {})
-  if (text === lastStoreText) return
-  lastStoreText = text
-  await update($, runs, () => normaliseRuns(stored ?? {}))
+  const changes = await readStoreChanges($)
+  if (changes === null) return
+  await update($, runs, local => mergeRuns(local, changes))
+}
+
+export async function pruneStore($: EngineInterface): Promise<void> {
+  const now = await $.clock.now()
+  const doomed = Object.values(await read($, runs)).filter(run => isPrunable(run, now)).map(run => run.key)
+  if (doomed.length === 0) return
+  for (const key of doomed) await forgetRun($, key)
+  await update($, runs, all => Object.fromEntries(Object.entries(all).filter(([key]) => !doomed.includes(key))))
 }
 
 export async function ensureHarnesses($: EngineInterface, force = false): Promise<Harnesses> {

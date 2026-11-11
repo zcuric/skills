@@ -45,6 +45,9 @@ export type Booted = {
   configs: Array<{ key: string; value: unknown }>
   toasts: string[]
   statuses: Array<string | undefined>
+  /** Pane ids `$.ui.open` was called with */
+  opened: string[]
+  tools: Array<{ name: string; isDeferred?: boolean }>
 }
 
 export function boot(on: On, routes: readonly Route[] = [], options: { now?: number; cwd?: string } = {}): Booted {
@@ -54,11 +57,19 @@ export function boot(on: On, routes: readonly Route[] = [], options: { now?: num
   const configs: Array<{ key: string; value: unknown }> = []
   const toasts: string[] = []
   const statuses: Array<string | undefined> = []
+  const opened: string[] = []
+  const tools: Array<{ name: string; isDeferred?: boolean }> = []
   on('session.start', (_$, e) => ({ cwd: e.cwd }))
   on('session.cwd', () => ({ value: options.cwd ?? '/repo' }))
   on('command.register', (_$, e) => ({ value: { command: e.name } }))
-  on('tool.register', (_$, e) => ({ value: { tool: `mcp__pr-pipeline__${e.name}` } }))
-  on('ui.open', () => ({ value: { isPlaced: true as const } }))
+  on('tool.register', (_$, e) => {
+    tools.push({ name: e.name, isDeferred: e.isDeferred })
+    return { value: { tool: `mcp__pr-pipeline__${e.name}` } }
+  })
+  on('ui.open', (_$, e) => {
+    opened.push(e.id)
+    return { value: { isPlaced: true as const } }
+  })
   on('ui.status', (_$, e) => {
     statuses.push(e.text)
     return { value: undefined }
@@ -76,7 +87,7 @@ export function boot(on: On, routes: readonly Route[] = [], options: { now?: num
     return { value: e.value }
   })
   const calls = fakeProcess(on, [...routes, ...REPO_ROUTES])
-  return { clock, calls, prompts, configs, toasts, statuses }
+  return { clock, calls, prompts, configs, toasts, statuses, opened, tools }
 }
 
 export const ran = (calls: string[][], ...prefix: string[]): string[][] =>
@@ -127,6 +138,26 @@ export const prRoutes = (world: PrWorld): Route[] => [
     ? { stdout: '{}' }
     : { stdout: JSON.stringify({ data: { repository: { pullRequest: { reviewThreads: { nodes: world.threads } } } } }) }],
 ]
+
+/** One store shared by every session on the machine: a test writes to it as another session would. */
+export function sharedStore(on: On, entries: Record<string, unknown> = {}): Record<string, unknown> {
+  const shared: Record<string, unknown> = { ...entries }
+  on('store.get', (_$, e) => ({ value: shared[e.key] }))
+  on('store.set', (_$, e) => {
+    shared[e.key] = JSON.parse(JSON.stringify(e.value))
+    return { value: undefined }
+  })
+  on('store.delete', (_$, e) => {
+    delete shared[e.key]
+    return { value: undefined }
+  })
+  on('store.keys', () => ({ value: Object.keys(shared) }))
+  return shared
+}
+
+/** The runs in a store, by run key. */
+export const storedRuns = (shared: Record<string, unknown>): Record<string, unknown> =>
+  Object.fromEntries(Object.entries(shared).filter(([key]) => key.startsWith('run:')).map(([key, run]) => [key.slice(4), run]))
 
 /** Answers `$.fs.read`, `exists` and `write` from `files` by absolute path; a write lands in `files`. */
 export function fakeFs(on: On, files: Record<string, string>): { writes: Array<{ path: string; text: string }> } {
