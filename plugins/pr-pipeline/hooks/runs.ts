@@ -1,5 +1,5 @@
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, PluginOptions } from 'claude-code'
+import type { Color as EngineColor, EngineInterface, PluginOptions } from 'claude-code'
 
 import type {
   Backend,
@@ -280,15 +280,8 @@ export const modelChip = (model: StageModel): string =>
 export const modelFull = (model: StageModel): string =>
   [model.backend, model.model, model.effort].filter(Boolean).join('·')
 
-export type Color = 'green' | 'yellow' | 'red' | 'gray' | 'cyan' | undefined
-
-/** Green from 80, yellow from 60, red below; gray when nothing is scored. */
-export const confidenceColor = (value: number | undefined): Color => {
-  if (value === undefined) return 'gray'
-  if (value >= 80) return 'green'
-  if (value >= 60) return 'yellow'
-  return 'red'
-}
+/** A theme key (`success`, `warning`, …) or a CSS color; undefined draws the default. */
+export type Color = EngineColor | undefined
 
 /** Acceptance confidence (or its criteria met %), else review's; undefined when neither scored. */
 export const runConfidence = (run: PipelineRun): number | undefined => {

@@ -2,14 +2,15 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
 import type { PipelineOptions, PipelineRun, PipelineToolInput, PrSnapshot, PrState, RepoRef, Runs, Stage, StageId } from '../types'
-import { card, duration, elapsed, isHuman, pill, prCard, RISK_COLOR, settingsCard, stageDetail, STATUS_COLOR, STATUS_GLYPH, submitPrompt, threadsCard } from './pane-pr'
+import { chip, confidenceTone, gauge, INK, isGraphic, pulse, RISK_TONE, STATUS_TONE, tint, track } from './look'
+import type { Tone } from './look'
+import { card, duration, elapsed, isHuman, prCard, settingsCard, stageDetail, STATUS_GLYPH, submitPrompt, threadsCard } from './pane-pr'
 import type { PaneContext, PaneEvent } from './pane-pr'
 import { failingRunIds, fixCiPrompt, prRefOf, refreshPr, syncPrompt, tick } from './pr'
 import {
-  STAGES, closeRun, confidenceColor, ensureHarnesses, followStoreOnce, isOpenRun, loadRuns, modelChip, pickedKey, pipelineOptions,
+  STAGES, closeRun, ensureHarnesses, followStoreOnce, isOpenRun, loadRuns, modelChip, pickedKey, pipelineOptions,
   reopenRun, runConfidence, stageLabel,
 } from './runs'
-import type { Color } from './runs'
 import { ARGUMENT_HINT, classifyTicket } from './ticket'
 import { afterBash, branchMoveBefore, handleTool, INPUT_SCHEMA, TOOL_DESCRIPTION } from './tool'
 
@@ -26,7 +27,7 @@ const LABEL_WIDTH = Math.max(...STAGES.map(stage => stage.label.length))
 const CHANGES_REQUESTED = /changes[\s_-]*requested|request(ed|s)?[\s_-]+changes/i
 const STALL_MS = 30 * 60_000
 
-type Attention = { key: string; text: string; color: Color; onPress?: () => unknown }
+type Attention = { key: string; text: string; tone: Tone; onPress?: () => unknown }
 
 const unmetCount = (stage: Stage): number => stage.criteria.filter(one => one.met !== 'yes').length
 
@@ -55,10 +56,10 @@ function prAttention($: EngineInterface, run: PipelineRun, snapshot: PrSnapshot 
   const humanThreads = snapshot.threads.filter(thread => !thread.isResolved && isHuman(thread.comments[0]?.author ?? 'bot'))
   const failed = snapshot.counts.checksFailed
   const items: Array<Attention | null> = [
-    failed > 0 ? { key: 'attn:ci', text: `✗ ${failed} failing check${failed === 1 ? '' : 's'}`, color: 'red', onPress: () => submitPrompt($, fixCiPrompt(ref, failingRunIds(snapshot))) } : null,
-    changesBy.length > 0 ? { key: 'attn:changes', text: `Changes requested by ${changesBy.join(', ')}`, color: 'red' } : null,
-    humanThreads.length > 0 ? { key: 'attn:threads', text: `${humanThreads.length} open review thread${humanThreads.length === 1 ? '' : 's'}`, color: 'yellow' } : null,
-    snapshot.mergeState === 'BEHIND' ? { key: 'attn:behind', text: 'behind base', color: 'yellow', onPress: () => submitPrompt($, syncPrompt(ref, snapshot)) } : null,
+    failed > 0 ? { key: 'attn:ci', text: `✗ ${failed} failing check${failed === 1 ? '' : 's'}`, tone: 'bad', onPress: () => submitPrompt($, fixCiPrompt(ref, failingRunIds(snapshot))) } : null,
+    changesBy.length > 0 ? { key: 'attn:changes', text: `Changes requested by ${changesBy.join(', ')}`, tone: 'bad' } : null,
+    humanThreads.length > 0 ? { key: 'attn:threads', text: `${humanThreads.length} open review thread${humanThreads.length === 1 ? '' : 's'}`, tone: 'warn' } : null,
+    snapshot.mergeState === 'BEHIND' ? { key: 'attn:behind', text: 'behind base', tone: 'warn', onPress: () => submitPrompt($, syncPrompt(ref, snapshot)) } : null,
   ]
   return items.filter((item): item is Attention => item !== null)
 }
@@ -71,10 +72,10 @@ function currentStageId(run: PipelineRun): StageId | undefined {
 }
 
 /** `◐ AI review`, `✕ Address`, `● done` for a Runs switcher row. */
-function runBrief(run: PipelineRun): { text: string; color: Color } {
+function runBrief(run: PipelineRun): { text: string; tone: Tone } {
   const current = run.stages.find(stage => stage.id === currentStageId(run))
-  if (current === undefined) return { text: `${STATUS_GLYPH.done} done`, color: 'green' }
-  return { text: `${STATUS_GLYPH[current.status]} ${stageLabel(current.id)}`, color: STATUS_COLOR[current.status] }
+  if (current === undefined) return { text: `${STATUS_GLYPH.done} done`, tone: 'good' }
+  return { text: `${STATUS_GLYPH[current.status]} ${stageLabel(current.id)}`, tone: STATUS_TONE[current.status] }
 }
 
 const runName = (run: PipelineRun): string => run.ticket ?? run.title ?? run.branch
@@ -97,8 +98,8 @@ async function renderPane($: EngineInterface, e: PaneEvent, options: PipelineOpt
     return (
       <Box flexDirection="column" rowGap={1} paddingX={1} paddingY={1}>
         {card(els, 'empty', [
-          <Text key="empty:title" weight="bold">{last === undefined ? 'No pipeline run yet' : 'No open pipeline run'}</Text>,
-          <Text key="empty:hint" dimColor>Type /pipeline with a ticket key (ABC-123), a GitHub issue (#123), a PR URL, or the task in words.</Text>,
+          <Text key="empty:title" size="heading" weight="bold">{last === undefined ? 'No pipeline run yet' : 'No open pipeline run'}</Text>,
+          <Text key="empty:hint" dimColor wrap="wrap">Type /pipeline with a ticket key (ABC-123), a GitHub issue (#123), a PR URL, or the task in words.</Text>,
           last === undefined ? null : (
             <Box key="empty:last" flexDirection="row" justifyContent="space-between" gap={1}>
               <Box flexShrink={1} minWidth={0}><Text dimColor wrap="truncate-end">{lastLine}</Text></Box>
@@ -119,53 +120,67 @@ async function renderPane($: EngineInterface, e: PaneEvent, options: PipelineOpt
 
   const switcher = openRuns.length < 2 ? null : card(els, 'runs', openRuns.map(one => {
     const brief = runBrief(one)
+    const isPicked = one.key === key
     return (
-      <Button key={`run:${one.key}`} plain onPress={() => update($, selectedKey, () => one.key).then(openTo(null))}>
-        <Text weight={one.repo !== undefined && one.repo === cwdRepo ? 'bold' : 'regular'} dimColor={one.key !== key}>
-          {`${one.key === key ? '●' : '○'} ${one.repo ?? 'unknown'} · ${one.branch}`}
-        </Text>
-        <Text dimColor>{one.ticket ? `  ${one.ticket}` : ''}</Text>
-        <Text color={brief.color} dimColor={brief.color === undefined}>{`  ${brief.text}`}</Text>
-      </Button>
+      <Box key={`runRow:${one.key}`} flexDirection="row" paddingX={1}
+        backgroundColor={isPicked ? tint(els, 'info', 0.12) : undefined} hover={{ backgroundColor: tint(els, 'info', 0.08) }}>
+        <Button key={`run:${one.key}`} plain onPress={() => update($, selectedKey, () => one.key).then(openTo(null))}>
+          <Text color={isPicked ? INK.info : undefined} dimColor={!isPicked}>{isPicked ? '● ' : '○ '}</Text>
+          <Text weight={one.repo !== undefined && one.repo === cwdRepo ? 'bold' : 'regular'} dimColor={!isPicked}>
+            {`${one.repo ?? 'unknown'} · ${one.branch}`}
+          </Text>
+          <Text dimColor mono>{one.ticket ? `  ${one.ticket}` : ''}</Text>
+          <Text color={brief.tone === 'muted' ? undefined : INK[brief.tone]} dimColor={brief.tone === 'muted'}>{`  ${brief.text}`}</Text>
+        </Button>
+      </Box>
     )
-  }), { title: 'Runs', aside: <Text size="caption" dimColor tabular>{openRuns.length}</Text>, gap: 0 })
+  }), { title: 'Runs', aside: chip(els, String(openRuns.length), 'muted'), gap: 0 })
 
   const closesIn = run.mergedAt === undefined ? 0 : Math.max(0, Math.ceil((run.mergedAt + 5 * 60_000 - now) / 60_000))
   const closeNow = () => void closeRun($, key).catch(err => $.ui.toast(String(err)))
-  const header = card(els, 'run', [
-    <Box key="run:title" flexDirection="row" justifyContent="space-between" alignItems="center" gap={1}>
-      <Box flexShrink={1} minWidth={0}>
-        <Text size="heading" wrap="truncate-end">
-          <Text weight="bold">{run.ticket ?? run.title ?? run.branch}</Text>
-          {run.ticket !== undefined && run.title ? <Text>{`  ${run.title}`}</Text> : null}
+  const doneCount = run.stages.filter(stage => stage.status === 'done' || stage.status === 'skipped').length
+  const confidenceLabel = confidence === undefined ? 'Confidence —' : `Confidence ${confidence}%`
+  const confidenceBadge = isGraphic(els)
+    ? (
+      <Box key="run:confidence" flexDirection="row" alignItems="center" gap={1} flexShrink={0}>
+        {gauge(els, 'run:gauge', confidence)}
+        <Text weight="semibold" tabular color={confidence === undefined ? undefined : INK[confidenceTone(confidence)]} dimColor={confidence === undefined}>
+          {confidenceLabel}
         </Text>
       </Box>
-      <Box flexShrink={0}>
-        {pill(els, confidence === undefined ? 'Confidence —' : `Confidence ${confidence}%`, confidenceColor(confidence), 'heading')}
+    )
+    : chip(els, confidenceLabel, confidenceTone(confidence), { key: 'run:confidence' })
+  const header = card(els, 'run', [
+    <Box key="run:top" flexDirection="row" justifyContent="space-between" alignItems="flex-start" gap={2}>
+      <Box flexDirection="column" flexShrink={1} minWidth={0}>
+        {run.ticket !== undefined ? <Text key="run:ticket" mono size="footnote" weight="semibold" color={INK.info}>{run.ticket}</Text> : null}
+        <Text key="run:title" size="title" weight="bold" wrap="wrap">{run.title ?? run.branch}</Text>
+        <Text key="run:where" mono size="footnote" dimColor wrap="truncate-middle">{`${run.repo ?? 'unknown'} · ${run.tracker ?? 'no tracker'} · ${run.branch}`}</Text>
       </Box>
+      {confidenceBadge}
     </Box>,
-    <Text key="run:where" dimColor wrap="truncate-middle">{`${run.repo ?? 'unknown'} · ${run.tracker ?? 'no tracker'} · ${run.branch}`}</Text>,
-    <Box key="run:badges" flexDirection="row" justifyContent="space-between" gap={1}>
-      <Box flexDirection="row" gap={1}>
-        {run.risk ? pill(els, `Risk ${run.risk}`, RISK_COLOR[run.risk]) : pill(els, 'Risk —', 'gray')}
-        {run.tier ? pill(els, `Tier ${run.tier}`, 'cyan') : null}
+    track(els, 'run:track', run.stages.map(stage => stage.status), `${doneCount} of ${STAGES.length} stages done`),
+    <Box key="run:badges" flexDirection="row" flexWrap="wrap" justifyContent="space-between" alignItems="center" gap={1}>
+      <Box flexDirection="row" alignItems="center" gap={1}>
+        {run.risk ? chip(els, `Risk ${run.risk}`, RISK_TONE[run.risk], { key: 'run:risk' }) : chip(els, 'Risk —', 'muted', { key: 'run:risk' })}
+        {run.tier ? chip(els, `Tier ${run.tier}`, 'info', { key: 'run:tier' }) : null}
         {run.prUrl && prNumber !== undefined ? <Link href={run.prUrl} label={`PR #${prNumber}`} /> : null}
       </Box>
       {run.mergedAt !== undefined
         ? (
-          <Box flexDirection="row" gap={1}>
-            <Text color="cyan">{`Merged · closes in ${closesIn} min`}</Text>
+          <Box flexDirection="row" alignItems="center" gap={1}>
+            <Text color={INK.merged} weight="semibold">{`Merged · closes in ${closesIn} min`}</Text>
             <Button key="run:close" plain label="Close now" onPress={closeNow} />
           </Box>
         )
         : <Button key="run:close" plain dimColor label="Close run" onPress={closeNow} />}
     </Box>,
-  ])
+  ], { tone: run.mergedAt !== undefined ? 'merged' : undefined })
 
   const running = run.stages.find(stage => stage.status === 'running')
   const quietFor = now - run.updatedAt
   const stalled: Attention[] = running !== undefined && quietFor > STALL_MS
-    ? [{ key: 'attn:stalled', text: `Stalled at ${stageLabel(running.id)} · no update ${duration(quietFor)}`, color: 'yellow', onPress: openTo(running.id) }]
+    ? [{ key: 'attn:stalled', text: `Stalled at ${stageLabel(running.id)} · no update ${duration(quietFor)}`, tone: 'warn', onPress: openTo(running.id) }]
     : []
   const attention: Attention[] = [
     ...stalled,
@@ -179,21 +194,29 @@ async function renderPane($: EngineInterface, e: PaneEvent, options: PipelineOpt
       ].filter((part): part is string => part !== null)
       if (parts.length === 0) return []
       const isSevere = stage.status === 'failed' || requestsChanges(stage) || unmet > 0
-      return [{ key: `attn:${stage.id}`, text: `${stageLabel(stage.id)} ${parts.join(' ')}`, color: isSevere ? 'red' : 'yellow', onPress: openTo(stage.id) }]
+      return [{ key: `attn:${stage.id}`, text: `${stageLabel(stage.id)} ${parts.join(' ')}`, tone: isSevere ? 'bad' : 'warn', onPress: openTo(stage.id) }]
     }),
     ...prAttention($, run, snapshot),
   ]
-  const attentionColor: Color = attention.some(item => item.color === 'red') ? 'red' : 'yellow'
-  const attentionStrip = attention.length === 0 ? null : card(els, 'attention', (
-    <Box flexDirection="row" flexWrap="wrap" columnGap={2}>
-      <Text weight="bold" color={attentionColor}>Needs attention</Text>
-      {attention.map(item => item.onPress !== undefined
-        ? <Button key={item.key} plain onPress={item.onPress}><Text color={item.color}>{item.text}</Text></Button>
-        : <Text key={item.key} color={item.color}>{item.text}</Text>)}
+  const attentionTone: Tone = attention.some(item => item.tone === 'bad') ? 'bad' : 'warn'
+  const attentionStrip = attention.length === 0 ? null : (
+    <Box key="attention" flexDirection="column" rowGap={0} paddingX={2} paddingY={1}
+      borderStyle="round" borderColor={INK[attentionTone]} backgroundColor={tint(els, attentionTone, 0.1)}>
+      <Text size="caption" weight="bold" color={INK[attentionTone]}>{`⚠ NEEDS ATTENTION · ${attention.length}`}</Text>
+      {attention.map(item => {
+        const text = <Text color={INK[item.tone]} weight={item.tone === 'bad' ? 'semibold' : 'regular'}>{item.text}</Text>
+        const dot = <Text key="dot" color={INK[item.tone]}>{'• '}</Text>
+        if (item.onPress === undefined) return <Box key={`${item.key}:row`} flexDirection="row">{dot}<Text key={item.key} color={INK[item.tone]}>{item.text}</Text></Box>
+        return (
+          <Box key={`${item.key}:row`} flexDirection="row" hover={{ backgroundColor: tint(els, item.tone, 0.12) }}>
+            {dot}
+            <Button key={item.key} plain onPress={item.onPress}>{text}</Button>
+          </Box>
+        )
+      })}
     </Box>
-  ), { color: attentionColor })
+  )
 
-  const doneCount = run.stages.filter(stage => stage.status === 'done' || stage.status === 'skipped').length
   const isFinished = run.stages.every(stage => stage.status !== 'pending' && stage.status !== 'running')
   const lastFinish = Math.max(0, ...run.stages.map(stage => stage.finishedAt ?? 0))
   const stagesAside = [
@@ -205,35 +228,44 @@ async function renderPane($: EngineInterface, e: PaneEvent, options: PipelineOpt
     const isCurrent = stage.id === currentId
     const isOpen = stage.id === open
     const isPending = stage.status === 'pending'
+    const isQuiet = isPending && !isCurrent && !isOpen
     const unmet = unmetCount(stage)
     const time = stage.status === 'running' || stage.status === 'done' || stage.status === 'failed' ? elapsed(stage, now) : ''
     const verdict = stage.id === 'risk' ? run.risk : undefined
     const model = run.models?.[stage.id]
-    const frame: Color = isOpen ? 'cyan' : stage.status === 'failed' ? 'red' : stage.status === 'running' ? 'yellow' : undefined
+    const tone = STATUS_TONE[stage.status]
+    const glyphInk = tone === 'muted' ? undefined : INK[tone]
+    const rowFill = isOpen ? tint(els, 'info', 0.14) : stage.status === 'failed' ? tint(els, 'bad', 0.08) : isCurrent ? tint(els, tone, 0.08) : undefined
+    const marker = stage.status === 'running' && isGraphic(els)
+      ? pulse(els, `pulse:${stage.id}`, 'warn')
+      : <Text key={`glyph:${stage.id}`} color={glyphInk} weight="bold" dimColor={isQuiet || glyphInk === undefined}>{STATUS_GLYPH[stage.status]}</Text>
     return (
-      <Box key={`row:${stage.id}`} flexDirection="row" justifyContent="space-between" alignItems="flex-start" gap={2}
-        borderStyle="round" borderColor={frame} borderDimColor={frame === undefined} paddingX={1}>
-        <Box flexGrow={1} flexShrink={1} minWidth={0}>
-          <Button key={`stage:${stage.id}`} plain onPress={openTo(isOpen ? null : stage.id)}>
-            <Text color={STATUS_COLOR[stage.status]} weight="bold" dimColor={isPending && !isCurrent}>{STATUS_GLYPH[stage.status]}</Text>
-            <Text mono tabular dimColor>{`  ${at + 1}  `}</Text>
-            <Text mono weight={isCurrent || isOpen ? 'bold' : 'regular'} color={stage.status === 'failed' ? 'red' : isOpen ? 'cyan' : undefined}
-              dimColor={isPending && !isCurrent && !isOpen}>
-              {(STAGES[at]?.label ?? stage.id).padEnd(LABEL_WIDTH)}
-            </Text>
-            {stage.status === 'skipped' ? <Text dimColor>{'   skipped'}</Text> : null}
-            {stage.summary ? <Text dimColor wrap="wrap">{`   ${stage.summary}`}</Text> : null}
-          </Button>
+      <Box key={`row:${stage.id}`} flexDirection="row" justifyContent="space-between" alignItems="flex-start" gap={2} paddingX={1}
+        backgroundColor={rowFill} hover={{ backgroundColor: tint(els, 'info', 0.08) }}
+        borderStyle={isGraphic(els) ? undefined : isOpen ? 'round' : undefined} borderColor={isOpen ? INK.info : undefined}>
+        <Box flexDirection="row" alignItems="flex-start" gap={1} flexGrow={1} flexShrink={1} minWidth={0}>
+          <Box flexShrink={0} width={2}>{marker}</Box>
+          <Box flexShrink={1} minWidth={0}>
+            <Button key={`stage:${stage.id}`} plain onPress={openTo(isOpen ? null : stage.id)}>
+              <Text mono tabular dimColor>{`${at + 1} `}</Text>
+              <Text weight={isCurrent || isOpen ? 'bold' : 'medium'} color={stage.status === 'failed' ? INK.bad : isOpen ? INK.info : undefined}
+                dimColor={isQuiet}>
+                {(STAGES[at]?.label ?? stage.id).padEnd(LABEL_WIDTH)}
+              </Text>
+              {stage.status === 'skipped' ? <Text dimColor italic>{'   skipped'}</Text> : null}
+              {stage.summary ? <Text dimColor size="footnote" wrap="wrap">{`   ${stage.summary}`}</Text> : null}
+            </Button>
+          </Box>
         </Box>
-        <Box flexDirection="row" flexShrink={0} gap={2}>
-          {model !== undefined ? <Text dimColor>{modelChip(model)}</Text> : null}
-          {stage.flags.length > 0 ? <Text color="yellow" tabular>⚠ {stage.flags.length}</Text> : null}
-          {unmet > 0 ? <Text color="red" tabular>✗ {unmet}</Text> : null}
-          {(stage.attempt ?? 1) > 1 ? <Text dimColor>{`attempt ${stage.attempt}`}</Text> : null}
-          {time ? <Text color={stage.status === 'running' ? 'yellow' : undefined} dimColor={stage.status !== 'running'} tabular>{time}</Text> : null}
-          {verdict ? pill(els, verdict, RISK_COLOR[verdict]) : null}
-          {stage.confidence !== undefined ? pill(els, `${stage.confidence}%`, confidenceColor(stage.confidence)) : null}
-          <Text color={isOpen ? 'cyan' : undefined} dimColor={!isOpen} weight="bold">{isOpen ? '▾' : '▸'}</Text>
+        <Box flexDirection="row" alignItems="center" flexShrink={0} gap={1}>
+          {model !== undefined ? <Text dimColor mono size="footnote">{modelChip(model)}</Text> : null}
+          {stage.flags.length > 0 ? <Text color={INK.warn} tabular>⚠ {stage.flags.length}</Text> : null}
+          {unmet > 0 ? <Text color={INK.bad} tabular>✗ {unmet}</Text> : null}
+          {(stage.attempt ?? 1) > 1 ? <Text dimColor size="footnote">{`attempt ${stage.attempt}`}</Text> : null}
+          {time ? <Text color={stage.status === 'running' ? INK.warn : undefined} dimColor={stage.status !== 'running'} tabular size="footnote">{time}</Text> : null}
+          {verdict ? chip(els, verdict, RISK_TONE[verdict]) : null}
+          {stage.confidence !== undefined ? chip(els, `${stage.confidence}%`, confidenceTone(stage.confidence)) : null}
+          <Text color={isOpen ? INK.info : undefined} dimColor={!isOpen} weight="bold">{isOpen ? '▾' : '›'}</Text>
         </Box>
       </Box>
     )

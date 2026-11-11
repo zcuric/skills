@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { Elements, EngineInterface, RenderChildren, RenderInput, RenderSurface } from 'claude-code'
 
-import type { Harnesses, Met, PipelineOptions, PipelineRun, PrSnapshot, PrState, PrThread, Risk, Stage, StageId, StageStatus } from '../types'
+import type { Harnesses, Met, PipelineOptions, PipelineRun, PrSnapshot, PrState, PrThread, Stage, StageId, StageStatus } from '../types'
 import { mergeGuard } from './github'
 import {
   failedChecks,
@@ -27,12 +27,12 @@ import {
   TRACKER_SETTINGS,
   approvalReason,
   approvalRequired,
-  confidenceColor,
   modelChip,
   modelFull,
   runConfidence,
 } from './runs'
-import type { Color } from './runs'
+import { bar, chip, confidenceTone, diffBlocks, gauge, INK, isGraphic, RISK_TONE, STATUS_TONE, tint } from './look'
+import type { Tone } from './look'
 
 const openStage = atom({ plugin: 'pr-pipeline', key: 'openStage' } as const, null as StageId | null)
 const prStates = atom({ plugin: 'pr-pipeline', key: 'pr' } as const, {} as Record<string, PrState>)
@@ -49,11 +49,9 @@ type Els = Elements[RenderSurface]
 export type PaneContext = { key: string; run: PipelineRun; now: number; options: PipelineOptions }
 
 export const STATUS_GLYPH: Record<StageStatus, string> = { pending: '○', running: '◐', done: '●', failed: '✕', skipped: '–' }
-export const STATUS_COLOR: Record<StageStatus, Color> = { pending: undefined, running: 'yellow', done: 'green', failed: 'red', skipped: 'gray' }
 const STATUS_WORD: Record<StageStatus, string> = { pending: 'Pending', running: 'Running', done: 'Done', failed: 'Failed', skipped: 'Skipped' }
-export const RISK_COLOR: Record<Risk, Color> = { low: 'green', medium: 'yellow', high: 'red' }
 const MET_GLYPH: Record<Met, string> = { yes: '✓', partial: '◐', no: '✗' }
-const MET_COLOR: Record<Met, Color> = { yes: 'green', partial: 'yellow', no: 'red' }
+const MET_TONE: Record<Met, Tone> = { yes: 'good', partial: 'warn', no: 'bad' }
 const BOT_LOGIN = /\[bot\]$|bot$/i
 const BODY_LIMIT = 1500
 
@@ -74,27 +72,31 @@ export const duration = (ms: number): string => {
 export const elapsed = (stage: Stage, now: number): string =>
   stage.startedAt === undefined ? '' : duration((stage.finishedAt ?? now) - stage.startedAt)
 
+/** A section: a soft panel on graphical surfaces, a rounded frame on the terminal; `tone` tints it. */
 export function card(
   els: Els,
   key: string,
   body: RenderChildren,
-  options: { title?: string; aside?: RenderChildren; color?: Color; gap?: number } = {},
+  options: { title?: string; aside?: RenderChildren; tone?: Tone; gap?: number } = {},
 ) {
   const { Box, Text } = els
+  const { tone } = options
+  const graphic = isGraphic(els)
   return (
     <Box
       key={key}
       flexDirection="column"
       borderStyle="round"
-      borderColor={options.color}
-      borderDimColor={options.color === undefined}
+      borderColor={tone !== undefined ? INK[tone] : undefined}
+      borderDimColor={tone === undefined}
+      backgroundColor={graphic ? tint(els, tone ?? 'muted', tone === undefined ? 0.04 : 0.07) : undefined}
       paddingX={2}
       paddingY={1}
       rowGap={options.gap ?? 1}
     >
       {options.title !== undefined ? (
-        <Box flexDirection="row" justifyContent="space-between" gap={1}>
-          <Text size="caption" weight="semibold" color={options.color} dimColor={options.color === undefined}>
+        <Box flexDirection="row" justifyContent="space-between" alignItems="center" gap={1}>
+          <Text size="caption" weight="bold" color={tone !== undefined ? INK[tone] : undefined} dimColor={tone === undefined}>
             {options.title.toUpperCase()}
           </Text>
           {options.aside ?? null}
@@ -105,18 +107,12 @@ export function card(
   )
 }
 
-export function pill(els: Els, text: string, color: Color, size: 'body' | 'heading' = 'body') {
-  const { Text } = els
-  if (color === 'gray') return <Text dimColor tabular size={size}> {text} </Text>
-  return <Text color={color} inverse weight="bold" tabular size={size}> {text} </Text>
-}
-
 const stateName = (snapshot: PrSnapshot): string => (snapshot.isDraft && snapshot.state === 'OPEN' ? 'DRAFT' : snapshot.state)
-const STATE_COLOR: Record<string, Color> = { OPEN: 'green', MERGED: 'cyan', CLOSED: 'red', DRAFT: 'gray' }
-const DECISION: Record<string, { text: string; color: Color }> = {
-  APPROVED: { text: 'Approved', color: 'green' },
-  CHANGES_REQUESTED: { text: 'Changes requested', color: 'red' },
-  REVIEW_REQUIRED: { text: 'Review required', color: 'yellow' },
+const STATE_TONE: Record<string, Tone> = { OPEN: 'good', MERGED: 'merged', CLOSED: 'bad', DRAFT: 'muted' }
+const DECISION: Record<string, { text: string; tone: Tone }> = {
+  APPROVED: { text: 'Approved', tone: 'good' },
+  CHANGES_REQUESTED: { text: 'Changes requested', tone: 'bad' },
+  REVIEW_REQUIRED: { text: 'Review required', tone: 'warn' },
 }
 const REVIEW_GLYPH: Record<string, string> = { APPROVED: '✓', CHANGES_REQUESTED: '✗' }
 
@@ -147,7 +143,7 @@ export async function prCard($: EngineInterface, e: PaneEvent, ctx: PaneContext)
   )
   const footerRow = (
     <Box key="pr:footer" flexDirection="row" justifyContent="space-between" gap={1}>
-      <Text size="footnote" dimColor color={state?.error !== undefined ? 'red' : undefined} wrap="truncate-end">{footer}</Text>
+      <Text size="footnote" dimColor={state?.error === undefined} color={state?.error !== undefined ? INK.bad : undefined} wrap="truncate-end">{footer}</Text>
       {refresh}
     </Box>
   )
@@ -157,7 +153,7 @@ export async function prCard($: EngineInterface, e: PaneEvent, ctx: PaneContext)
 
   const counts = snapshot.counts
   const failing = failedChecks(snapshot)
-  const decision = DECISION[snapshot.reviewDecision] ?? { text: 'No review decision', color: 'gray' as Color }
+  const decision = DECISION[snapshot.reviewDecision] ?? { text: 'No review decision', tone: 'muted' as Tone }
   const reviewers = [...new Map(snapshot.reviews.map(review => [review.author, review.state])).entries()]
   const guard = mergeGuard(snapshot, { approvalRequired: approvalRequired(run), why: approvalReason(run) })
   const rerunIds = rerunnableIds(key, snapshot)
@@ -190,42 +186,53 @@ export async function prCard($: EngineInterface, e: PaneEvent, ctx: PaneContext)
           ? <Button key="pr:merge" variant="primary" label={`Merge (${options.merge_method})`}
             onPress={() => void mergeFromPane($, key, options.merge_method).catch(err => $.ui.toast(String(err)))} />
           : null}
-        {!guard.ok ? <Text dimColor wrap="wrap">{`Merge: ${guard.reasons.join(' · ')}`}</Text> : null}
+        {!guard.ok ? <Text color={INK.warn} wrap="wrap">{`Merge: ${guard.reasons.join(' · ')}`}</Text> : null}
         {!approvalRequired(run)
           ? <Text dimColor size="footnote">{`no approval needed · risk low · confidence ${confidence ?? 0}%`}</Text>
           : null}
       </Box>
     )
 
+  const checksAlt = `${counts.checksPassed} passed, ${counts.checksFailed} failed, ${counts.checksPending} pending checks`
   return card(els, 'pr', [
-    <Box key="pr:title" flexDirection="row" justifyContent="space-between" gap={1}>
-      <Box flexShrink={1} minWidth={0}>
-        <Text weight="bold" wrap="truncate-end">{`#${snapshot.number} ${snapshot.title}`}</Text>
+    <Box key="pr:title" flexDirection="row" justifyContent="space-between" alignItems="center" gap={1}>
+      <Box flexDirection="row" alignItems="center" gap={1} flexShrink={1} minWidth={0}>
+        {chip(els, stateName(snapshot), STATE_TONE[stateName(snapshot)] ?? 'muted', { key: 'pr:state' })}
+        <Box flexShrink={1} minWidth={0}>
+          <Text weight="semibold" wrap="truncate-end">
+            <Text dimColor tabular>{`#${snapshot.number} `}</Text>
+            {snapshot.title}
+          </Text>
+        </Box>
       </Box>
-      <Box flexDirection="row" flexShrink={0} gap={1}>
-        {pill(els, stateName(snapshot), STATE_COLOR[stateName(snapshot)])}
-        <Text tabular>
-          <Text color="green">{`+${counts.additions}`}</Text>
-          <Text color="red">{` −${counts.deletions}`}</Text>
-          <Text dimColor>{` · ${counts.changedFiles} files`}</Text>
+      <Box flexDirection="row" alignItems="center" flexShrink={0} gap={1}>
+        {diffBlocks(els, counts.additions, counts.deletions)}
+        <Text dimColor size="footnote" tabular>{`${counts.changedFiles} files`}</Text>
+      </Box>
+    </Box>,
+    <Box key="pr:checks-block" flexDirection="column" rowGap={0}>
+      {bar(els, 'pr:checks-bar', [
+        { value: counts.checksPassed, tone: 'good' },
+        { value: counts.checksFailed, tone: 'bad' },
+        { value: counts.checksPending, tone: 'warn' },
+      ], checksAlt)}
+      <Box key="pr:checks" flexDirection="row" flexWrap="wrap" columnGap={2}>
+        <Text tabular size="footnote">
+          <Text color={INK.good}>{`✓ ${counts.checksPassed} passed`}</Text>
+          <Text color={counts.checksFailed > 0 ? INK.bad : undefined} dimColor={counts.checksFailed === 0}>{`  ✗ ${counts.checksFailed} failed`}</Text>
+          <Text color={counts.checksPending > 0 ? INK.warn : undefined} dimColor={counts.checksPending === 0}>{`  ● ${counts.checksPending} pending`}</Text>
         </Text>
+        {failing.map(check => check.url !== undefined
+          ? <Link key={`check:${check.name}`} href={check.url} label={check.name} />
+          : <Text key={`check:${check.name}`} color={INK.bad}>{check.name}</Text>)}
       </Box>
     </Box>,
-    <Box key="pr:checks" flexDirection="row" flexWrap="wrap" columnGap={2}>
-      <Text tabular>
-        <Text color="green">{`✓ ${counts.checksPassed}`}</Text>
-        <Text color={counts.checksFailed > 0 ? 'red' : undefined} dimColor={counts.checksFailed === 0}>{`  ✗ ${counts.checksFailed}`}</Text>
-        <Text color={counts.checksPending > 0 ? 'yellow' : undefined} dimColor={counts.checksPending === 0}>{`  ● ${counts.checksPending}`}</Text>
-      </Text>
-      {failing.map(check => check.url !== undefined
-        ? <Link key={`check:${check.name}`} href={check.url} label={check.name} />
-        : <Text key={`check:${check.name}`} color="red">{check.name}</Text>)}
-    </Box>,
-    <Box key="pr:reviews" flexDirection="row" flexWrap="wrap" columnGap={2}>
-      {pill(els, decision.text, decision.color)}
+    <Box key="pr:reviews" flexDirection="row" flexWrap="wrap" alignItems="center" columnGap={2}>
+      {chip(els, decision.text, decision.tone, { key: 'pr:decision' })}
       {reviewers.map(([login, reviewState]) => (
-        <Text key={`reviewer:${login}`} dimColor={reviewState !== 'APPROVED' && reviewState !== 'CHANGES_REQUESTED'}>
-          {`${login} ${REVIEW_GLYPH[reviewState] ?? '💬'}`}
+        <Text key={`reviewer:${login}`} size="footnote" dimColor={reviewState !== 'APPROVED' && reviewState !== 'CHANGES_REQUESTED'}
+          color={reviewState === 'APPROVED' ? INK.good : reviewState === 'CHANGES_REQUESTED' ? INK.bad : undefined}>
+          {`${REVIEW_GLYPH[reviewState] ?? '💬'} ${login}`}
         </Text>
       ))}
     </Box>,
@@ -235,7 +242,7 @@ export async function prCard($: EngineInterface, e: PaneEvent, ctx: PaneContext)
     mergeRow,
     <Box key="pr:actions" flexDirection="row" flexWrap="wrap" columnGap={2}>{actions}</Box>,
     footerRow,
-  ], { title: 'Pull request', color: snapshot.counts.checksFailed > 0 ? 'red' : undefined })
+  ], { title: 'Pull request', tone: snapshot.counts.checksFailed > 0 ? 'bad' : undefined })
 }
 
 const threadWhere = (thread: PrThread): string => `${thread.path}${thread.line !== null ? `:${thread.line}` : ''}`
@@ -285,12 +292,14 @@ export async function threadsCard($: EngineInterface, e: PaneEvent, ctx: PaneCon
     const isOpen = opened[thread.id] === true
     const replies = Math.max(0, thread.comments.length - 1)
     return (
-      <Box key={`threadBox:${thread.id}`} flexDirection="column" rowGap={0} borderStyle="round" borderDimColor paddingX={1}>
+      <Box key={`threadBox:${thread.id}`} flexDirection="column" rowGap={0} paddingX={1} paddingY={isGraphic(els) ? 1 : 0}
+        borderStyle={isGraphic(els) ? undefined : 'round'} borderDimColor
+        backgroundColor={tint(els, thread.isResolved ? 'muted' : 'warn', thread.isResolved ? 0.05 : 0.07)}>
         <Button key={`thread:${thread.id}`} plain onPress={() => update($, openThreads, all => ({ ...all, [thread.id]: !isOpen }))}>
-          <Text mono color={thread.isResolved ? undefined : 'yellow'} dimColor={thread.isResolved}>{threadWhere(thread)}</Text>
+          <Text mono weight="semibold" color={thread.isResolved ? undefined : INK.warn} dimColor={thread.isResolved}>{threadWhere(thread)}</Text>
           <Text dimColor>{`  ${first?.author ?? 'unknown'} · ${replies} ${replies === 1 ? 'reply' : 'replies'}`}</Text>
           {thread.isOutdated ? <Text dimColor inverse>{' outdated '}</Text> : null}
-          {thread.isResolved ? <Text color="green">{'  resolved'}</Text> : null}
+          {thread.isResolved ? <Text color={INK.good}>{'  ✓ resolved'}</Text> : null}
         </Button>
         {first !== undefined ? <Markdown key={`body:${thread.id}`} text={cut(first.body)} dimColor={thread.isResolved} /> : null}
         {isOpen && first?.diffHunk ? <Code source={first.diffHunk} format="diff" path={thread.path} wrap="truncate-end" /> : null}
@@ -320,8 +329,8 @@ export async function threadsCard($: EngineInterface, e: PaneEvent, ctx: PaneCon
       : null,
   ], {
     title: 'Threads',
-    color: unresolved.length > 0 ? 'yellow' : undefined,
-    aside: <Text size="caption" tabular dimColor>{`${unresolved.length} open / ${snapshot.threads.length}`}</Text>,
+    tone: unresolved.length > 0 ? 'warn' : undefined,
+    aside: chip(els, `${unresolved.length} open / ${snapshot.threads.length}`, unresolved.length > 0 ? 'warn' : 'muted'),
   })
 }
 
@@ -402,83 +411,84 @@ export async function stageDetail($: EngineInterface, e: PaneEvent, ctx: PaneCon
   const previous = STAGES[index - 1]
   const following = STAGES[index + 1]
 
+  const tone = STATUS_TONE[stage.status]
+  const accent = stage.status === 'pending' || stage.status === 'skipped' ? undefined : tone
+  const listRow = (key: string, glyph: string, glyphTone: Tone | undefined, text: string, foot?: string) => (
+    <Box key={key} flexDirection="column">
+      <Box flexDirection="row" gap={1}>
+        <Text color={glyphTone !== undefined ? INK[glyphTone] : undefined} dimColor={glyphTone === undefined} weight="bold">{glyph}</Text>
+        <Box flexShrink={1} minWidth={0}><Text wrap="wrap">{text}</Text></Box>
+      </Box>
+      {foot ? <Box paddingLeft={2}><Text size="footnote" dimColor wrap="wrap">{foot}</Text></Box> : null}
+    </Box>
+  )
+
   return (
     <Box flexDirection="column" rowGap={1} marginTop={1}>
-      <Box flexDirection="row" justifyContent="space-between" paddingX={1} gap={1}>
+      <Box flexDirection="row" justifyContent="space-between" alignItems="center" paddingX={1} gap={1}>
         <Box flexDirection="row" gap={2}>
           <Button key="back" plain label="× Close" onPress={openTo(null)} />
-          {previous ? <Button key="prev" plain label={`‹ ${previous.label}`} onPress={openTo(previous.id)} /> : null}
-          {following ? <Button key="next" plain label={`${following.label} ›`} onPress={openTo(following.id)} /> : null}
+          {previous ? <Button key="prev" plain dimColor label={`‹ ${previous.label}`} onPress={openTo(previous.id)} /> : null}
+          {following ? <Button key="next" plain dimColor label={`${following.label} ›`} onPress={openTo(following.id)} /> : null}
         </Box>
-        <Text dimColor tabular>Stage {index + 1} of {STAGES.length}</Text>
+        <Text size="caption" dimColor tabular>{`STAGE ${index + 1} OF ${STAGES.length}`}</Text>
       </Box>
       {card(els, 'stage', [
-        <Box key="stage:title" flexDirection="row" justifyContent="space-between" gap={1}>
-          <Text size="heading" weight="bold" wrap="truncate-end">
-            <Text color={STATUS_COLOR[stage.status]}>{STATUS_GLYPH[stage.status]}</Text>
-            {` ${meta.label}`}
-          </Text>
-          <Text color={STATUS_COLOR[stage.status]} dimColor={stage.status === 'pending'} weight="semibold">{STATUS_WORD[stage.status]}</Text>
+        <Box key="stage:title" flexDirection="row" justifyContent="space-between" alignItems="center" gap={1}>
+          <Box flexShrink={1} minWidth={0}>
+            <Text size="title" weight="bold" wrap="truncate-end">
+              <Text color={accent !== undefined ? INK[accent] : undefined} dimColor={accent === undefined}>{STATUS_GLYPH[stage.status]}</Text>
+              {` ${meta.label}`}
+            </Text>
+          </Box>
+          {chip(els, STATUS_WORD[stage.status], tone, { key: 'stage:status' })}
         </Box>,
-        <Text key="stage:blurb" size="footnote" dimColor italic>{meta.blurb}</Text>,
+        <Text key="stage:blurb" size="footnote" dimColor italic wrap="wrap">{meta.blurb}</Text>,
         isSkipped
           ? <Text key="stage:skipped" dimColor wrap="wrap">{`Skipped by ${model !== undefined ? modelFull(model) : 'unknown'}: ${stage.summary ?? 'no reason given'}`}</Text>
           : null,
-        !isSkipped && model !== undefined
-          ? <Text key="stage:who" dimColor>{`Ran on ${modelChip(model)}`}</Text>
-          : null,
-        stage.confidence !== undefined || timing !== null || isRisk ? (
-          <Box key="stage:meta" flexDirection="row" flexWrap="wrap" columnGap={2}>
-            {isRisk && run.risk ? pill(els, `Risk ${run.risk}`, RISK_COLOR[run.risk]) : null}
-            {stage.confidence !== undefined
-              ? <Text color={confidenceColor(stage.confidence)} tabular weight="semibold">{`Confidence: ${stage.confidence}%`}</Text>
-              : null}
-            {timing !== null ? <Text dimColor tabular>{timing}</Text> : null}
+        stage.confidence !== undefined || timing !== null || isRisk || (!isSkipped && model !== undefined) ? (
+          <Box key="stage:meta" flexDirection="row" flexWrap="wrap" alignItems="center" columnGap={2}>
+            {isRisk && run.risk ? chip(els, `Risk ${run.risk}`, RISK_TONE[run.risk], { key: 'stage:risk' }) : null}
+            {stage.confidence !== undefined ? (
+              <Box key="stage:confidence" flexDirection="row" alignItems="center" gap={1}>
+                {gauge(els, 'stage:gauge', stage.confidence, 16)}
+                <Text color={INK[confidenceTone(stage.confidence)]} tabular weight="semibold">{`Confidence: ${stage.confidence}%`}</Text>
+              </Box>
+            ) : null}
+            {timing !== null ? <Text dimColor tabular size="footnote">{`⏱ ${timing}`}</Text> : null}
+            {!isSkipped && model !== undefined ? <Text key="stage:who" dimColor mono size="footnote">{`Ran on ${modelChip(model)}`}</Text> : null}
           </Box>
         ) : null,
-      ], { color: stage.status === 'failed' ? 'red' : stage.status === 'running' ? 'yellow' : undefined })}
+      ], { tone: accent })}
 
-      {stage.summary && !isSkipped ? card(els, 'summary', <Text>{stage.summary}</Text>, { title: 'Summary' }) : null}
+      {stage.summary && !isSkipped ? card(els, 'summary', <Text wrap="wrap">{stage.summary}</Text>, { title: 'Summary' }) : null}
 
-      {stage.flags.length > 0 ? card(els, 'flags', stage.flags.map((flag, at) => (
-        <Box key={`flag:${at}`} flexDirection="row" gap={1}>
-          <Text color="yellow">⚠</Text>
-          <Text>{flag}</Text>
-        </Box>
-      )), { title: 'Flags', color: 'yellow', aside: <Text size="caption" color="yellow" tabular>{stage.flags.length}</Text> }) : null}
+      {stage.flags.length > 0
+        ? card(els, 'flags', stage.flags.map((flag, at) => listRow(`flag:${at}`, '⚠', 'warn', flag)), {
+          title: 'Flags', tone: 'warn', aside: chip(els, String(stage.flags.length), 'warn'), gap: 0,
+        })
+        : null}
 
-      {stage.did.length > 0 ? card(els, 'did', stage.did.map((line, at) => (
-        <Box key={`did:${at}`} flexDirection="row" gap={1}>
-          <Text color="green">✓</Text>
-          <Text>{line}</Text>
-        </Box>
-      )), { title: 'Done' }) : null}
+      {stage.did.length > 0
+        ? card(els, 'did', stage.did.map((line, at) => listRow(`did:${at}`, '✓', 'good', line)), { title: 'Done', gap: 0 })
+        : null}
 
-      {stage.criteria.length > 0 ? card(els, 'criteria', stage.criteria.map((one, at) => (
-        <Box key={`criterion:${at}`} flexDirection="column">
-          <Box flexDirection="row" gap={1}>
-            <Text color={MET_COLOR[one.met]}>{MET_GLYPH[one.met]}</Text>
-            <Text>{one.text}</Text>
-          </Box>
-          {one.evidence ? <Box paddingLeft={2}><Text size="footnote" dimColor>{one.evidence}</Text></Box> : null}
-        </Box>
-      )), {
+      {stage.criteria.length > 0 ? card(els, 'criteria', stage.criteria.map((one, at) =>
+        listRow(`criterion:${at}`, MET_GLYPH[one.met], MET_TONE[one.met], one.text, one.evidence)), {
         title: 'Criteria',
-        aside: <Text size="caption" color={metCount === stage.criteria.length ? 'green' : 'red'} tabular>{metCount}/{stage.criteria.length} met</Text>,
+        aside: chip(els, `${metCount}/${stage.criteria.length} met`, metCount === stage.criteria.length ? 'good' : 'bad'),
       }) : null}
 
-      {stage.notes.length > 0 ? card(els, 'notes', stage.notes.map((note, at) => (
-        <Box key={`note:${at}`} flexDirection="row" gap={1}>
-          <Text dimColor>•</Text>
-          <Text>{note}</Text>
-        </Box>
-      )), { title: 'Decisions' }) : null}
+      {stage.notes.length > 0
+        ? card(els, 'notes', stage.notes.map((note, at) => listRow(`note:${at}`, '•', undefined, note)), { title: 'Decisions', gap: 0 })
+        : null}
 
       {stage.links.length > 0 ? card(els, 'links', stage.links.map(link => (
         <Link key={`link:${link.href}`} href={link.href} label={link.label} />
-      )), { title: 'Links' }) : null}
+      )), { title: 'Links', gap: 0 }) : null}
 
-      {empty ? card(els, 'nothing', <Text dimColor>Nothing recorded yet.</Text>) : null}
+      {empty ? card(els, 'nothing', <Text dimColor italic>Nothing recorded yet.</Text>) : null}
     </Box>
   )
 }
