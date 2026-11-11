@@ -249,9 +249,38 @@ const threadWhere = (thread: PrThread): string => `${thread.path}${thread.line !
 
 const cut = (text: string): string => (text.length > BODY_LIMIT ? `${text.slice(0, BODY_LIMIT)}…` : text)
 
+const MD_IMAGE = /!\[([^\]]*)\]\((\S+?)(?:\s+"[^"]*")?\)/g
+const HTML_IMAGE = /<img\b[^>]*>/gi
+const HTML_LINK = /<a\b[^>]*\bhref="([^"]+)"[^>]*>([\s\S]*?)<\/a>/gi
+const attribute = (tag: string, name: string): string => new RegExp(`\\b${name}="([^"]*)"`, 'i').exec(tag)?.[1] ?? ''
+
+export type CommentImage = { alt: string; url: string }
+
+/** Pulls images out of a comment, which the pane cannot draw inline, and turns HTML links into markdown ones. */
+export function splitImages(body: string): { text: string; images: CommentImage[] } {
+  const images: CommentImage[] = []
+  const text = body
+    .replace(MD_IMAGE, (_all, alt: string, url: string) => {
+      images.push({ alt, url })
+      return ''
+    })
+    .replace(HTML_IMAGE, tag => {
+      const url = attribute(tag, 'src')
+      if (url !== '') images.push({ alt: attribute(tag, 'alt'), url })
+      return ''
+    })
+    .replace(HTML_LINK, (_all, href: string, label: string) => {
+      const plain = label.replace(/<[^>]+>/g, '').trim()
+      return plain === '' ? '' : `[${plain}](${href})`
+    })
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
+  return { text, images }
+}
+
 export async function threadsCard($: EngineInterface, e: PaneEvent, ctx: PaneContext): Promise<RenderChildren> {
   const els = $.ui.resolve(e)
-  const { Box, Text, Button, Markdown, Code } = els
+  const { Box, Text, Button, Link, Markdown, Code } = els
   const { key } = ctx
   const snapshot = (await read($, prStates))[key]?.snapshot
   if (snapshot === undefined || snapshot.threads.length === 0) return null
@@ -287,6 +316,22 @@ export async function threadsCard($: EngineInterface, e: PaneEvent, ctx: PaneCon
     )
   }
 
+  const commentBody = (bodyKey: string, body: string, isDim: boolean) => {
+    const { text, images } = splitImages(body)
+    return (
+      <Box key={`${bodyKey}:box`} flexDirection="column" rowGap={0}>
+        {text !== '' ? <Markdown key={bodyKey} text={cut(text)} dimColor={isDim} /> : null}
+        {images.length > 0 ? (
+          <Box key={`${bodyKey}:images`} flexDirection="row" flexWrap="wrap" columnGap={2}>
+            {images.map((image, at) => (
+              <Link key={`${bodyKey}:image:${at}`} href={image.url} label={`🖼 ${image.alt.trim() || `Image ${at + 1}`}`} />
+            ))}
+          </Box>
+        ) : null}
+      </Box>
+    )
+  }
+
   const threadRow = (thread: PrThread) => {
     const [first, ...rest] = thread.comments
     const isOpen = opened[thread.id] === true
@@ -295,18 +340,26 @@ export async function threadsCard($: EngineInterface, e: PaneEvent, ctx: PaneCon
       <Box key={`threadBox:${thread.id}`} flexDirection="column" rowGap={0} paddingX={1} paddingY={isGraphic(els) ? 1 : 0}
         borderStyle={isGraphic(els) ? undefined : 'round'} borderDimColor
         backgroundColor={tint(els, thread.isResolved ? 'muted' : 'warn', thread.isResolved ? 0.05 : 0.07)}>
-        <Button key={`thread:${thread.id}`} plain onPress={() => update($, openThreads, all => ({ ...all, [thread.id]: !isOpen }))}>
-          <Text mono weight="semibold" color={thread.isResolved ? undefined : INK.warn} dimColor={thread.isResolved}>{threadWhere(thread)}</Text>
-          <Text dimColor>{`  ${first?.author ?? 'unknown'} · ${replies} ${replies === 1 ? 'reply' : 'replies'}`}</Text>
-          {thread.isOutdated ? <Text dimColor inverse>{' outdated '}</Text> : null}
-          {thread.isResolved ? <Text color={INK.good}>{'  ✓ resolved'}</Text> : null}
-        </Button>
-        {first !== undefined ? <Markdown key={`body:${thread.id}`} text={cut(first.body)} dimColor={thread.isResolved} /> : null}
+        <Box key={`threadHead:${thread.id}`} flexDirection="row" justifyContent="space-between" alignItems="flex-start" gap={1}>
+          <Box flexShrink={1} minWidth={0}>
+            <Button key={`thread:${thread.id}`} plain onPress={() => update($, openThreads, all => ({ ...all, [thread.id]: !isOpen }))}>
+              <Text mono weight="semibold" color={thread.isResolved ? undefined : INK.warn} dimColor={thread.isResolved}>{threadWhere(thread)}</Text>
+              <Text dimColor>{`  ${first?.author ?? 'unknown'} · ${replies} ${replies === 1 ? 'reply' : 'replies'}`}</Text>
+              {thread.isOutdated ? <Text dimColor inverse>{' outdated '}</Text> : null}
+              {thread.isResolved ? <Text color={INK.good}>{'  ✓ resolved'}</Text> : null}
+            </Button>
+          </Box>
+          {first?.url ? <Box flexShrink={0}><Link key={`link:${thread.id}`} href={first.url} label="GitHub ↗" /></Box> : null}
+        </Box>
+        {first !== undefined ? commentBody(`body:${thread.id}`, first.body, thread.isResolved) : null}
         {isOpen && first?.diffHunk ? <Code source={first.diffHunk} format="diff" path={thread.path} wrap="truncate-end" /> : null}
         {isOpen ? rest.map(comment => (
           <Box key={`comment:${comment.id}`} flexDirection="column" paddingLeft={2}>
-            <Text dimColor size="footnote">{comment.author}</Text>
-            <Markdown text={cut(comment.body)} />
+            <Box flexDirection="row" gap={1}>
+              <Text dimColor size="footnote">{comment.author}</Text>
+              {comment.url ? <Link key={`commentLink:${comment.id}`} href={comment.url} label="↗" /> : null}
+            </Box>
+            {commentBody(`text:${comment.id}`, comment.body, false)}
           </Box>
         )) : null}
         {thread.isResolved || isBusy ? null : (

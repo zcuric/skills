@@ -2,6 +2,7 @@ import { expect, mock, test } from 'claude-code/testing'
 
 import { boot, PANE, PR_URL, prRoutes, prThread, prView, ran, START, TOOL } from './kit'
 import type { PrWorld } from './kit'
+import { splitImages } from '../hooks/pane-pr'
 
 const failing = (name: string, runId: string) => ({
   __typename: 'CheckRun', name, status: 'COMPLETED', conclusion: 'FAILURE', detailsUrl: `https://github.com/o/r/actions/runs/${runId}/job/1`,
@@ -32,6 +33,7 @@ test('the pane shows the PR checks, review decision and open threads', async ($,
   expect(await ui.find({ type: 'Text', text: /^\s*Changes requested\s*$/ })).toBeDefined()
   expect((await ui.find({ key: 'thread:T1' }))?.text).toMatch(/app\/a\.ts:9\s+ana · 0 replies/)
   expect((await ui.find({ key: 'body:T1' }))?.text).toMatch(/Please rename this helper/)
+  expect((await ui.find({ type: 'Link', text: /^GitHub ↗$/ }))?.props.href).toBe(`${PR_URL}#discussion_T1`)
   expect((await ui.find({ key: 'attn:ci' }))?.text).toMatch(/1 failing check/)
   expect(await ui.find({ type: 'Text', text: /^Changes requested by ana$/ })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /^1 open review thread$/ })).toBeDefined()
@@ -223,4 +225,12 @@ test('a skipped stage shows who skipped it and why', async ($, on) => {
   await ui.press({ key: 'stage:review' })
   expect(await ui.find({ type: 'Text', text: /^Ran on opus·high$/ })).toBeDefined()
   await ui.unmount()
+})
+
+test('comment images become links and HTML links become markdown', () => {
+  const body = 'See this\n\n<img width="300" alt="Before" src="https://github.com/user-attachments/assets/1" />\n\n\n![](https://x.test/2.png) and <a href="https://x.test/doc">the doc</a>'
+  expect(splitImages(body)).toEqual({
+    text: 'See this\n\n and [the doc](https://x.test/doc)',
+    images: [{ alt: '', url: 'https://x.test/2.png' }, { alt: 'Before', url: 'https://github.com/user-attachments/assets/1' }],
+  })
 })
