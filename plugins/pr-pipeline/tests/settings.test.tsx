@@ -62,7 +62,10 @@ test('the settings card writes a picked option to config', async ($, on) => {
   await ui.press({ key: 'settings:toggle' })
   await ui.select({ key: 'set:reviewer', value: 'codex' })
   expect(configs).toEqual([{ key: 'pr-pipeline.reviewer', value: 'codex' }])
-  expect(await ui.find({ type: 'Text', text: /gh: \/opt\/homebrew\/bin\/gh · codex: not found · opencode: not found/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: 'gh ✓' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: 'codex –' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: 'opencode –' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /homebrew/ })).toBeUndefined()
   await ui.unmount()
 
   const mobile = await $.ui.mount({ ...PANE, surface: 'mobile' })
@@ -136,4 +139,84 @@ test('with the custom reviewer the settings card edits the command on desktop an
   const mobile = await $.ui.mount({ ...PANE, surface: 'mobile' })
   expect(await mobile.find({ type: 'Text', text: /^Review command: review-cli -x/ })).toBeDefined()
   await mobile.unmount()
+})
+
+test('the closed settings card sums up the review and merge choices', async ($, on) => {
+  boot(on)
+  mock.store(on)
+  await $.session.start(START)
+  await $.tool.call({ tool: TOOL, action: 'start', branch: 'feature/settings' })
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(await ui.find({ type: 'Text', text: /^claude · opus · low · squash$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /not installed|no review command/ })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('with the claude reviewer the model is a select that writes review_model', { options: { review_model: 'opus-preview' } }, async ($, on) => {
+  const { configs } = boot(on)
+  mock.store(on)
+  await $.session.start(START)
+  await $.tool.call({ tool: TOOL, action: 'start', branch: 'feature/settings' })
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await ui.press({ key: 'settings:toggle' })
+  const model = await ui.find({ key: 'set:model' })
+  expect(model?.type).toBe('Select')
+  expect(model?.props.options).toContainEqual({ value: 'opus-preview' })
+  await ui.select({ key: 'set:model', value: 'sonnet' })
+  expect(configs).toEqual([{ key: 'pr-pipeline.review_model', value: 'sonnet' }])
+  await ui.unmount()
+})
+
+test('with another reviewer the model is typed in, trimmed, and an empty one is refused', { options: { reviewer: 'opencode' } }, async ($, on) => {
+  const { configs, toasts } = boot(on)
+  mock.store(on)
+  await $.session.start(START)
+  await $.tool.call({ tool: TOOL, action: 'start', branch: 'feature/settings' })
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await ui.press({ key: 'settings:toggle' })
+  await ui.input({ key: 'set:model', text: '   ' })
+  expect(configs).toEqual([])
+  expect(toasts).toContain('Review model cannot be empty')
+  await ui.input({ key: 'set:model', text: '  provider/model-x  ' })
+  expect(configs).toEqual([{ key: 'pr-pipeline.review_model', value: 'provider/model-x' }])
+  expect(await ui.find({ type: 'Text', text: 'Every review uses this model.' })).toBeDefined()
+  await ui.unmount()
+})
+
+test('a reviewer that is not installed is labelled and warned about', { options: { reviewer: 'codex' } }, async ($, on) => {
+  boot(on)
+  mock.store(on)
+  await $.session.start(START)
+  await $.tool.call({ tool: TOOL, action: 'start', branch: 'feature/settings' })
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(await ui.find({ type: 'Text', text: 'codex not installed' })).toBeDefined()
+  await ui.press({ key: 'settings:toggle' })
+  const reviewer = await ui.find({ key: 'set:reviewer' })
+  expect(reviewer?.props.value).toBe('codex')
+  expect(reviewer?.props.options).toContainEqual({ value: 'codex', label: 'codex · not installed' })
+  expect(reviewer?.props.options).toContainEqual({ value: 'claude' })
+  expect(await ui.find({ type: 'Text', text: /^codex is not installed\. Reviews fall back to claude\.$/ })).toBeDefined()
+  await ui.unmount()
+
+  const mobile = await $.ui.mount({ ...PANE, surface: 'mobile' })
+  expect(await mobile.find({ type: 'Text', text: /^Model: opus$/ })).toBeDefined()
+  expect(await mobile.find({ type: 'Text', text: /^codex is not installed/ })).toBeDefined()
+  await mobile.unmount()
+})
+
+test('the custom reviewer without a command is warned about', { options: { reviewer: 'custom' } }, async ($, on) => {
+  boot(on)
+  mock.store(on)
+  await $.session.start(START)
+  await $.tool.call({ tool: TOOL, action: 'start', branch: 'feature/settings' })
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(await ui.find({ type: 'Text', text: 'no review command' })).toBeDefined()
+  await ui.press({ key: 'settings:toggle' })
+  expect(await ui.find({ type: 'Text', text: /^No review command set\. Reviews fall back to claude\.$/ })).toBeDefined()
+  await ui.unmount()
 })

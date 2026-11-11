@@ -161,7 +161,7 @@ The prompts also work on their own, in any agent or in CI: [`agents/reviewer.md`
 
 ## Settings
 
-All in `/config` under `pr-pipeline`. The pane's Settings card has the reviewer, its model and effort, the tracker, and the review command once the reviewer is `custom`:
+All in `/config` under `pr-pipeline`. The pane's Settings card edits all of them: the reviewer with its model and effort (a list of claude models, or any model id for the other reviewers), the review command once the reviewer is `custom`, the tracker and the merge method:
 
 | Setting | Default | Meaning |
 | --- | --- | --- |

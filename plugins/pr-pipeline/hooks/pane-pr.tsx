@@ -1,5 +1,5 @@
 import { atom, read, update } from 'claude-code'
-import type { Elements, EngineInterface, RenderChildren, RenderInput, RenderSurface } from 'claude-code'
+import type { Elements, EngineInterface, RenderChildren, RenderInput, RenderSurface, SelectOption } from 'claude-code'
 
 import type { Harnesses, Met, PipelineOptions, PipelineRun, PrSnapshot, PrState, PrThread, ReplyBox, Stage, StageId, StageStatus } from '../types'
 import { mergeGuard } from './github'
@@ -21,6 +21,7 @@ import {
 } from './pr'
 import {
   BACKENDS,
+  CLAUDE_MODELS,
   EFFORTS,
   MERGE_METHODS,
   REVIEW_COMMAND_MAX,
@@ -398,6 +399,126 @@ export async function writeSetting($: EngineInterface, field: keyof PipelineOpti
   if ('deny' in written && written.deny !== undefined) $.ui.toast(`Setting ${field} refused: ${written.deny}`)
 }
 
+const OPTIONAL_TOOLS = ['codex', 'opencode'] as const
+
+const isMissing = (found: Harnesses | null, tool: keyof Omit<Harnesses, 'checkedAt'>): boolean =>
+  found !== null && found[tool] === null
+
+/** Why the chosen reviewer cannot run, as a short chip and a full sentence; null when it can. */
+function reviewerProblem(options: PipelineOptions, found: Harnesses | null): { short: string; line: string } | null {
+  const { reviewer } = options
+  if (reviewer === 'custom' && options.review_command === '') {
+    return { short: 'no review command', line: 'No review command set. Reviews fall back to claude.' }
+  }
+  if ((reviewer === 'codex' || reviewer === 'opencode') && isMissing(found, reviewer)) {
+    return { short: `${reviewer} not installed`, line: `${reviewer} is not installed. Reviews fall back to claude.` }
+  }
+  return null
+}
+
+const groupLabel = (els: Els, key: string, text: string) =>
+  <els.Text key={key} dimColor size="footnote" weight="semibold">{text}</els.Text>
+
+function settingsGroup(els: Els, key: string, label: string, rows: RenderChildren[]) {
+  return <els.Box key={key} flexDirection="column">{[groupLabel(els, `${key}:label`, label), ...rows]}</els.Box>
+}
+
+function toolChips(els: Els, found: Harnesses | null) {
+  const { Box, Text } = els
+  if (found === null) return <Text key="settings:tools" dimColor size="footnote">checking tools…</Text>
+  const gh = found.gh === null ? chip(els, 'gh missing', 'bad', { key: 'tool:gh' }) : chip(els, 'gh ✓', 'good', { key: 'tool:gh' })
+  const optional = OPTIONAL_TOOLS.map(tool => found[tool] === null
+    ? chip(els, `${tool} –`, 'muted', { key: `tool:${tool}` })
+    : chip(els, `${tool} ✓`, 'good', { key: `tool:${tool}` }))
+  return <Box key="settings:tools" flexDirection="row" flexWrap="wrap" gap={1}>{[gh, ...optional]}</Box>
+}
+
+type SettingField = { key: string; field: keyof PipelineOptions; label: string; values: ReadonlyArray<SelectOption> }
+
+function settingRow($: EngineInterface, e: PaneEvent, ctx: PaneContext, one: SettingField) {
+  const els = $.ui.resolve(e)
+  const value = String(ctx.options[one.field])
+  if (e.surface === 'mobile' || !('Select' in els)) return <els.Text key={one.key}>{`${one.label}: ${value}`}</els.Text>
+  return (
+    <els.Select key={one.key} label={one.label} value={value} options={one.values}
+      onSelect={picked => void writeSetting($, one.field, picked).catch(err => $.ui.toast(String(err)))} />
+  )
+}
+
+const plainOptions = (values: readonly string[]): SelectOption[] => values.map(value => ({ value }))
+
+function modelRow($: EngineInterface, e: PaneEvent, ctx: PaneContext) {
+  const els = $.ui.resolve(e)
+  const { options } = ctx
+  const isEditable = e.surface !== 'mobile' && 'Input' in els
+  if (options.reviewer === 'claude' || !isEditable) {
+    const models: readonly string[] = CLAUDE_MODELS
+    const values = models.includes(options.review_model) ? models : [...models, options.review_model]
+    return settingRow($, e, ctx, { key: 'set:model', field: 'review_model', label: 'Model', values: plainOptions(values) })
+  }
+  const saveModel = (value: string) => {
+    const model = value.trim()
+    if (model === '') {
+      void $.ui.toast('Review model cannot be empty')
+      return
+    }
+    void writeSetting($, 'review_model', model).catch(err => $.ui.toast(String(err)))
+  }
+  return (
+    <els.Input key="set:model" label="Model" placeholder="model id the CLI accepts" submitLabel="Save"
+      value={options.review_model} onSubmit={saveModel} />
+  )
+}
+
+function commandRows($: EngineInterface, e: PaneEvent, ctx: PaneContext): RenderChildren[] {
+  const els = $.ui.resolve(e)
+  const { Text } = els
+  const { options } = ctx
+  if (options.reviewer !== 'custom') return []
+  if (e.surface === 'mobile' || !('Input' in els)) {
+    return [
+      <Text key="settings:command" wrap="wrap">
+        {`Review command: ${options.review_command || 'not set'}`}
+        <Text dimColor>{'  /config pr-pipeline.review_command'}</Text>
+      </Text>,
+    ]
+  }
+  const saveCommand = (value: string) => {
+    const command = value.trim()
+    if (command.length > REVIEW_COMMAND_MAX) {
+      void $.ui.toast(`Review command is longer than ${REVIEW_COMMAND_MAX} characters`)
+      return
+    }
+    void writeSetting($, 'review_command', command).catch(err => $.ui.toast(String(err)))
+  }
+  return [
+    <els.Input key="set:review_command" label="Command" placeholder="agent-cli --model {model}" submitLabel="Save"
+      value={options.review_command} onSubmit={saveCommand} />,
+    <Text key="settings:command:hint" dimColor size="footnote" wrap="wrap">{'Prompt on stdin, answer on stdout. {model} becomes the model above.'}</Text>,
+  ]
+}
+
+function reviewGroup($: EngineInterface, e: PaneEvent, ctx: PaneContext, found: Harnesses | null) {
+  const els = $.ui.resolve(e)
+  const { Text } = els
+  const { options } = ctx
+  const reviewers = BACKENDS.map(value => (value === 'codex' || value === 'opencode') && isMissing(found, value)
+    ? { value, label: `${value} · not installed` }
+    : { value })
+  const problem = reviewerProblem(options, found)
+  const hint = options.reviewer === 'claude'
+    ? 'Defaults. A run\'s task class can route a different model and effort.'
+    : 'Every review uses this model.'
+  return settingsGroup(els, 'settings:review', 'Review', [
+    settingRow($, e, ctx, { key: 'set:reviewer', field: 'reviewer', label: 'Reviewer', values: reviewers }),
+    modelRow($, e, ctx),
+    settingRow($, e, ctx, { key: 'set:effort', field: 'review_effort', label: 'Effort', values: plainOptions(EFFORTS) }),
+    ...commandRows($, e, ctx),
+    <Text key="settings:hint" dimColor size="footnote" wrap="wrap">{hint}</Text>,
+    problem === null ? null : <Text key="settings:warning" color={INK.warn} wrap="wrap">{problem.line}</Text>,
+  ])
+}
+
 export async function settingsCard($: EngineInterface, e: PaneEvent, ctx: PaneContext): Promise<RenderChildren> {
   const els = $.ui.resolve(e)
   const { Box, Text, Button } = els
@@ -408,66 +529,27 @@ export async function settingsCard($: EngineInterface, e: PaneEvent, ctx: PaneCo
     <Button key="settings:toggle" plain dimColor={!isOpen} label={`${isOpen ? '▾' : '▸'} Settings`}
       onPress={() => update($, settingsOpen, value => !value)} />
   )
-  if (!isOpen) return <Box key="settings" paddingX={1}>{toggle}</Box>
-
-  const toolLine = found === null
-    ? 'checking tools…'
-    : (['gh', 'codex', 'opencode'] as const).map(tool => `${tool}: ${found[tool] ?? 'not found'}`).join(' · ')
-
-  const fields: Array<{ key: string; field: keyof PipelineOptions; label: string; values: readonly string[] }> = [
-    { key: 'set:reviewer', field: 'reviewer', label: 'Reviewer', values: BACKENDS },
-    { key: 'set:effort', field: 'review_effort', label: 'Review effort', values: EFFORTS },
-    { key: 'set:tracker', field: 'tracker', label: 'Tracker', values: TRACKER_SETTINGS },
-    { key: 'set:merge', field: 'merge_method', label: 'Merge method', values: MERGE_METHODS },
-  ]
-
-  const controls = e.surface !== 'mobile' && 'Select' in els
-    ? fields.map(one => {
-      const { Select } = els
-      return (
-        <Select
-          key={one.key}
-          label={one.label}
-          value={String(options[one.field])}
-          options={one.values.map(value => ({ value }))}
-          onSelect={value => void writeSetting($, one.field, value).catch(err => $.ui.toast(String(err)))}
-        />
-      )
-    })
-    : fields.map(one => <Text key={one.key}>{`${one.label}: ${String(options[one.field])}`}</Text>)
-
-  const saveCommand = (value: string) => {
-    const command = value.trim()
-    if (command.length > REVIEW_COMMAND_MAX) {
-      void $.ui.toast(`Review command is longer than ${REVIEW_COMMAND_MAX} characters`)
-      return
-    }
-    void writeSetting($, 'review_command', command).catch(err => $.ui.toast(String(err)))
+  if (!isOpen) {
+    const problem = reviewerProblem(options, found)
+    const summary = [options.reviewer, options.review_model, options.review_effort, options.merge_method].join(' · ')
+    return (
+      <Box key="settings" paddingX={1} flexDirection="row" flexWrap="wrap" alignItems="center" gap={1}>
+        {toggle}
+        <Text key="settings:summary" dimColor size="footnote">{summary}</Text>
+        {problem === null ? null : chip(els, problem.short, 'warn', { key: 'settings:problem' })}
+      </Box>
+    )
   }
-  const commandLine = options.reviewer !== 'custom'
-    ? null
-    : e.surface !== 'mobile' && 'Input' in els
-      ? (
-        <els.Input key="set:review_command" label="Review command" placeholder="agent-cli --model {model}" submitLabel="Save"
-          value={options.review_command} onSubmit={saveCommand} />
-      )
-      : (
-        <Text key="settings:command" wrap="wrap">
-          {`Review command: ${options.review_command || 'not set'}`}
-          <Text dimColor>{'  /config pr-pipeline.review_command'}</Text>
-        </Text>
-      )
 
   return card(els, 'settings', [
     toggle,
-    ...controls,
-    commandLine,
-    <Text key="settings:model">
-      {`Review model: ${options.review_model}`}
-      <Text dimColor>{'  /config pr-pipeline.review_model'}</Text>
-    </Text>,
-    <Text key="settings:tools" dimColor size="footnote" wrap="wrap">{toolLine}</Text>,
-  ], { gap: 0 })
+    reviewGroup($, e, ctx, found),
+    settingsGroup(els, 'settings:pr', 'Pull request', [
+      settingRow($, e, ctx, { key: 'set:tracker', field: 'tracker', label: 'Tracker', values: plainOptions(TRACKER_SETTINGS) }),
+      settingRow($, e, ctx, { key: 'set:merge', field: 'merge_method', label: 'Merge', values: plainOptions(MERGE_METHODS) }),
+    ]),
+    settingsGroup(els, 'settings:toolsGroup', 'Tools', [toolChips(els, found)]),
+  ])
 }
 
 export async function stageDetail($: EngineInterface, e: PaneEvent, ctx: PaneContext): Promise<RenderChildren> {
