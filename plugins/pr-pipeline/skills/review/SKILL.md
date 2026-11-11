@@ -1,11 +1,11 @@
 ---
 name: review
-description: Review an open PR with an AI reviewer (claude by default, codex or opencode when chosen) and post one GitHub review with line comments, confidence badges, an acceptance table and a verdict, then swap the ai review label. Use for "AI review this PR", "post an AI review on PR n", or as stage 4 of the PR pipeline.
+description: Review an open PR with an AI reviewer (claude by default, codex or opencode when chosen) and post one GitHub review with a one-line verdict and a line comment per confirmed defect, then swap the ai review label. Use for "AI review this PR", "post an AI review on PR n", or as stage 4 of the PR pipeline.
 ---
 
 # AI PR review
 
-One GitHub review per run: a summary body plus one comment per finding, pinned to the exact line. The author cannot approve their own PR, so the verdict is a `COMMENT` review and a label, never `APPROVE`; people approve.
+One GitHub review per run: a one- or two-line body plus one comment per finding, pinned to the exact line. The author cannot approve their own PR, so the verdict is a `COMMENT` review and a label, never `APPROVE`; people approve.
 
 ## Inputs
 
@@ -63,11 +63,20 @@ For the sensitive class (and standalone when a sensitive signal is in the diff),
 - backend claude and the profile names a `securityAgent`: spawn that agent with the prompt file's sections 2–5 plus "Report only security findings, as JSON in the `findings` shape of the contract above."
 - otherwise: run the same backend again with `security-prompt.md` from this skill's directory appended to the prompt file (write it as `<criteriaDir>/review-prompt-security.md`).
 
-Merge the security findings into the main ones by `path:line`: on a collision keep the higher severity and confidence and join the bodies. A high security finding sets the verdict to `changes_requested`.
+Merge the security findings into the main ones by `path:line`: on a collision keep one finding with the higher severity and confidence. A high security finding sets the verdict to `changes_requested`.
 
 ## Verify
 
 Check each finding yourself before posting: open the file at the line. Drop a finding whose line is not part of the diff or whose claim the code does not support. Keep the reviewer's confidence where you agree; lower it when you half agree.
+
+Post a line comment only when all of these hold:
+
+- Its confidence after your check is 60 or more.
+- It is a defect: wrong behaviour, data exposure or loss, a broken contract, a test that cannot fail. Style, naming, comment length and "consider" are not posted.
+- The ticket, the criteria or the PR body does not already answer it. An open question goes in the body as one `Question:` line.
+- It is the only thread for its root cause. A security-pass duplicate merges into it silently.
+
+Verified defects under 60 are not dropped: write them to `<criteriaDir>/review-held.json` in the `findings` shape, and stage 5 fixes them without a thread. Standalone, name them in the closing message.
 
 ## Post
 
@@ -76,9 +85,9 @@ Write `<criteriaDir>/review.json`:
 ```json
 {
   "event": "COMMENT",
-  "body": "<summary markdown>",
+  "body": "<body markdown>",
   "comments": [
-    { "path": "src/orders/total.ts", "line": 42, "side": "RIGHT", "body": "<finding markdown>" }
+    { "path": "src/orders/total.ts", "line": 42, "side": "RIGHT", "body": "<line comment markdown>" }
   ]
 }
 ```
@@ -87,41 +96,36 @@ Write `<criteriaDir>/review.json`:
 gh api repos/{owner}/{repo}/pulls/<n>/reviews --input <criteriaDir>/review.json
 ```
 
-### Finding comment
+### Line comment
 
 ````markdown
-![high](https://img.shields.io/badge/high-d73a4a) ![confidence 85%](https://img.shields.io/badge/confidence-85%25-2ea44f)
-**Null customer breaks the total**
+**[high] Archived clients still get the unmasked files**
 
-`orderTotal()` reads `order.customer.discount`, but guest checkouts create the order before a customer is attached.
+If the client is archived between submit and the job, both files with full SSNs reach their portal: the upload's archive check reads the relation the sheet loaded `withInactive()`.
 
-```suggestion
-const discount = order.customer?.discount ?? 0;
-```
+Check the taxpayer is active with a fresh query before building either file.
 ````
 
-Badge colours: confidence 80 and up `2ea44f`, 60 to 79 `dbab09`, under 60 `9f9f9f`; severity high `d73a4a`, medium `fbca04`, low `0075ca`. Include the suggestion block only when the reviewer gave replacement code that compiles in place.
+Line 1 is the severity in brackets plus the consequence a user or operator would see, not the mechanism. Then at most two sentences on when it happens and why, naming one or two identifiers. Then the fix in one sentence, or a `suggestion` block when the reviewer gave replacement code that compiles in place. 80 words at most outside the suggestion. No badges, no confidence number, no provenance tags ("security pass agrees"), no praise, no restating what the line does.
 
-### Summary body
+### Body
 
 ````markdown
-## AI review · LGTM 👍            (or: ## AI review · Changes requested)
+**AI review: changes requested** · 1 high, 2 medium
+Description: the body says guests get the discount; the diff skips them.
+Question: Should an archived client still see files shared before the archive?
+````
 
-🟢 Confidence: 92% · 🟢 Verdict: lgtm            (🟢 80+ · 🟡 60–79 · 🔴 under 60; verdict 🔴 when changes requested)
+- Line 1 is the verdict and the posted findings counted by severity. With no findings and a truthful description the whole body is `**AI review: lgtm** · no findings`.
+- `Description:` only when `description_confidence` is under 80: what the body says against what the diff does, in one sentence.
+- `Question:` one line per open question the ticket, the criteria and the PR body do not answer.
+- Nothing else: no badges, no tables, no reviewer or model name, no footer. The reviewer's `acceptance` verdicts are not posted; stage 7 records the criteria and the proof shows them.
 
-![verdict](https://img.shields.io/badge/verdict-lgtm-2ea44f) ![description](https://img.shields.io/badge/description%20matches%20diff-92%25-2ea44f) ![findings](https://img.shields.io/badge/findings-3-blue)
+#### How the change runs
 
-<one sentence on whether the PR body matches the diff>
+Only when the PR body has no `mermaid` diagram of its own (a PR the pipeline did not write), append the reviewer's reading of what the changed code does at runtime, so a reader who skips the diff still learns the behaviour:
 
-| Acceptance criterion | Met | Evidence |
-| --- | --- | --- |
-| Total includes the discount | ✅ | `orderTotal.test.ts › applies discount` |
-| Guest checkout shows no discount row | ⚠️ partial | branch exists, no test |
-
-| # | File | Severity | Confidence | Finding |
-| --- | --- | --- | --- | --- |
-| 1 | `src/orders/total.ts:42` | high | 85% | Null customer breaks the total |
-
+````markdown
 <details open><summary><b>How the change runs</b></summary>
 
 ```mermaid
@@ -129,23 +133,18 @@ flowchart TD
   A[Guest submits checkout] --> B[Create order]
   B --> C{Customer attached?}
   C -->|Yes| D[Apply customer discount]
-  C -->|No| E["Read order.customer.discount ⚠️ #1"]
+  C -->|No| E["Read order.customer.discount ⚠️"]
   D --> F[Compute total]
   E --> F
 ```
 
 </details>
-
-Reviewed by <backend> <model> at <effort> effort. Line comments carry a confidence score each; replies on the thread are read by the pipeline's address stage.
 ````
 
-The diagram is the reviewer's reading of what the changed code does at runtime, so a reader who skips the diff still learns the behaviour:
-
-- Top-down (`flowchart TD`), 4–10 nodes, each a step in plain domain words (`Queue filing after commit`, not `FileJob.php`). Name a function only when the reader needs it to find the code.
-- Show every decision the diff adds or changes as a `{question?}` node with labelled `Yes`/`No` edges, including skip, retry and failure paths.
-- Mark the node a finding lands on with `⚠️ #n`, matching the findings table.
-- Never draw the review, the pipeline, the diff or a list of files.
-- Omit the block when the change has no flow of three or more steps: a copy change, a renamed field, a config value, a pure shape change. The footer names what actually ran, after any fallback.
+- Top-down, 4–10 nodes, each a step in plain domain words (`Queue filing after commit`, not `FileJob.php`). Name a function only when the reader needs it to find the code.
+- Every decision the diff adds or changes is a `{question?}` node with labelled `Yes`/`No` edges, including skip, retry and failure paths.
+- Mark the node a posted finding lands on with `⚠️`.
+- Never draw the review, the pipeline, the diff or a list of files. Omit the block when the change has no flow of three or more steps.
 
 ## Label and record
 
@@ -155,4 +154,4 @@ Swap the labels from the profile map; a `null` key is skipped:
 gh pr edit <n> --remove-label "<labels.aiChangesRequested>" --add-label "<labels.aiLgtm>"   # or the reverse
 ```
 
-Record with `mcp__pr-pipeline__pipeline` on stage `review`: the `running` call carries `backend`, `model` and `effort`; the closing call has status `done`, summary `lgtm · 3 findings` or `changes requested · 1 high` (keep the literal phrase `changes requested`; the pane keys on it), confidence = `description_confidence`, one `did` per posted finding (`src/orders/total.ts:42 · high · null customer`), a `flag` per finding dropped as unverifiable and per fallback, and a `link` to the review URL the API returned (`html_url`). End with `{ action: "pr" }` so the pane's Threads card shows the new comments.
+Record with `mcp__pr-pipeline__pipeline` on stage `review`: the `running` call carries `backend`, `model` and `effort`; the closing call has status `done`, summary `lgtm · 3 findings` or `changes requested · 1 high` (keep the literal phrase `changes requested`; the pane keys on it), confidence = `description_confidence`, one `did` per posted finding (`src/orders/total.ts:42 · high · null customer`), a `note` per reviewer acceptance verdict that is `false` or `partial` and per finding held for stage 5, a `flag` per finding dropped as unverifiable and per fallback, and a `link` to the review URL the API returned (`html_url`). End with `{ action: "pr" }` so the pane's Threads card shows the new comments.

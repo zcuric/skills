@@ -182,14 +182,14 @@ Title `{titlePrefix} Subject under 70 chars` (no prefix when it is empty). With 
 <linkLine, expanded; omit the line when there is none>
 
 <!-- pipeline-status -->
-⚪ Merge risk: pending · ⚪ Confidence: pending · AI review: pending · Acceptance: 0/4 · e2e: pending
+⚪ Merge risk: pending · Review: pending · Acceptance: 0/4 · e2e: pending
 <!-- /pipeline-status -->
 
 ## Summary
 <one sentence: why this change, in the ticket's words>
 
 ## Details
-<1–3 bullets a reviewer must know: a drive-by, an assumption, a trap. Omit the section when there are none.>
+<At most 3 bullets, each under 200 characters: only what would change a reviewer's decision (a product call, a one-way door, a paired PR to ship with). How it was implemented, what e2e found, and anything the outline shows do not belong here. Omit the section when there are none.>
 
 ## Change outline
 <one view that fits the change, see below>
@@ -214,25 +214,24 @@ Then `gh pr edit`: the type label (`typeBug` or `typeFeature`) and `stateReview`
 
 #### Pipeline status strip
 
-The line between the `pipeline-status` markers is the PR's traffic light. It sits above the fold so a reviewer sees risk and confidence before reading anything. Rewrite it with `gh pr edit <n> --body-file <file>` (replace only the text between the markers, keep the rest of the body) at the end of stages 4, 6, 7, 8 and 9:
+The line between the `pipeline-status` markers is the PR's traffic light. It sits above the fold so a reviewer sees the merge risk before reading anything. Rewrite it with `gh pr edit <n> --body-file <file>` (replace only the text between the markers, keep the rest of the body) at the end of stages 4, 6, 7, 8 and 9:
 
 | Slot | Value | Light |
 | --- | --- | --- |
 | Merge risk | `pending` → `low` / `medium` / `high` after stage 8 | 🟢 low · 🟡 medium · 🔴 high · ⚪ pending |
-| Confidence | stage 7 criteria-met %, else stage 4 description confidence | 🟢 80+ · 🟡 60–79 · 🔴 under 60 · ⚪ pending |
-| AI review | `lgtm` / `changes requested` / `n findings open` after stage 4 | text only |
+| Review | `lgtm` / `changes requested` after stage 4 | text only |
 | Acceptance | `met/total` after stage 7 | text only |
-| e2e | `pending` / `n lanes` / `skipped · <reason> (decided by sonnet, low effort)` after stage 6 | text only |
+| e2e | `pending` / `n lanes` / `skipped · <reason>` after stage 6 | text only |
 
-Example after stage 9: `🟢 Merge risk: low · 🟢 Confidence: 92% · AI review: lgtm · Acceptance: 4/4 · e2e: 2 lanes`; a skip reads `e2e: skipped · CSS-only change, no criterion needs the running stack (decided by sonnet, low effort)`. Same thresholds as the pane header, so the two never disagree.
+Example after stage 9: `🟡 Merge risk: medium · Review: lgtm · Acceptance: 6/6 · e2e: 5 lanes`; a skip reads `e2e: skipped · CSS-only change, no criterion needs the running stack`. Exactly these four slots, values from the table only; no counts of findings or screenshots, no free text beyond the e2e skip reason. The merge-risk light matches the pane header.
 
 ### 4. AI review
 
-Run the `pr-pipeline:review` skill with the backend from setup and the route's model and effort; pass the class, so a sensitive diff gets the security pass. It posts the review and swaps the label to `aiLgtm` or `aiChangesRequested`. Record the `running` call with the backend, model and effort that actually ran (after a fallback, the claude values plus the skill's flag). Record the verdict as the summary (`lgtm · n findings` or, verbatim, `changes requested · n high`; the pane's attention strip keys on that phrase), `description_confidence` as the confidence, each posted finding as a `did`, and a `flag` for any finding dropped as unverifiable. Refresh the status strip, link the review, `{ action: "pr" }`.
+Run the `pr-pipeline:review` skill with the backend from setup and the route's model and effort; pass the class, so a sensitive diff gets the security pass. It posts the review and swaps the label to `aiLgtm` or `aiChangesRequested`. Record the `running` call with the backend, model and effort that actually ran (after a fallback, the claude values plus the skill's flag). Record the verdict as the summary (`lgtm · n findings` or, verbatim, `changes requested · n high`; the pane's attention strip keys on that phrase), `description_confidence` as the confidence, each posted finding as a `did`, and a `flag` for any finding dropped as unverifiable. Verified findings under 60 come back in `<criteriaDir>/review-held.json` with no thread; stage 5 fixes them. Refresh the status strip, link the review, `{ action: "pr" }`.
 
 ### 5. Address
 
-Read the threads with `{ action: "pr", fresh: true }`: every thread in `pr.threads` with `isResolved` false. For each AI finding with confidence 60 or more: fix it, commit, push, then `{ action: "pr-reply", threadId, body: "Fixed in <sha>: <what changed>" }` and `{ action: "pr-resolve", threadId }`; record each as a `did`. Below 60: reply with the reasoning when you disagree (record as a `note`), fix when it is cheap. A thread from a person that appears during the run is answered the same way, and flagged so the person sees it was handled. Run `lint` and the touched tests before the push. End with `{ action: "pr", fresh: true }` and handle failing checks and a `BEHIND` base as in "Nothing to open on GitHub". Re-run stage 4 once; a second `changes requested` stops the pipeline with status `failed`. When the first review was `lgtm` with no findings and no human threads are open, mark this stage `skipped`.
+Read the threads with `{ action: "pr", fresh: true }`: every thread in `pr.threads` with `isResolved` false. For each AI thread: fix it, commit, push, then `{ action: "pr-reply", threadId, body }` and `{ action: "pr-resolve", threadId }`; record each as a `did`. The reply body is `Fixed in <sha>.`, plus one sentence only when the fix differs from what the comment asked; no test names, no restating the diff. When you disagree, reply with the reason in one sentence and record a `note`. Fix the held findings in `<criteriaDir>/review-held.json` too, without a thread, each recorded as a `did`. A thread from a person that appears during the run is answered the same way, and flagged so the person sees it was handled. Run `lint` and the touched tests before the push. End with `{ action: "pr", fresh: true }` and handle failing checks and a `BEHIND` base as in "Nothing to open on GitHub". Re-run stage 4 once; a second `changes requested` stops the pipeline with status `failed`. When the first review was `lgtm` with no posted or held findings and no human threads are open, mark this stage `skipped`.
 
 ### 6. E2E verify
 
@@ -264,6 +263,8 @@ Use the route's model and effort, in this order:
 2. No `e2e` skill, but `.claude/launch.json` exists: a Browser-pane smoke. `preview_start` its first configuration, navigate to the routes or screens the diff touches, take an after screenshot of every state the criteria mention, and read the console for errors. A before screenshot comes from the base branch when a second preview of it is cheap; otherwise say "after only" in a `note`.
 3. Neither: `skipped` with summary `Skipped: no e2e skill or .claude/launch.json in this repo` and the same `backend`/`model`/`effort` as the running call. Flag it when 6a decided to run, since a criterion then needed the running stack.
 
+Stage 6 never posts a PR comment, and tells the e2e skill not to; its screenshots and table reach the PR only through the proof.
+
 Keep screenshots in `<criteriaDir>/e2e/`. Browser-pane screenshots land on disk at `~/.claude/projects/<project>/<session>/tool-results/mcp-Claude_Browser-blob-*.jpg`; copy the ones you keep. A query-perf route adds a measurement lane (timings or query counts before and after). Cross-repo features start the siblings' branches too and drive the flow across them. Link the published artifact or screenshots to the stage, record each lane as a `did`, flag any lane you could not drive.
 
 ### 7. Acceptance
@@ -276,50 +277,35 @@ Run the `pr-pipeline:risk` skill in a subagent at the route's model and effort, 
 
 ### 9. Final proof
 
-Read `{ action: "pr", fresh: true }` first: a failing check is fixed (back through stage 5's push path) before the proof is posted; pending checks are named in the proof.
+Read `{ action: "pr", fresh: true }` first: a failing check is fixed (back through stage 5's push path) before the proof is posted; pending checks are named under Not verified.
 
 **Human look.** Decide whether the PR needs a human look: yes when the merge risk is medium or high, the acceptance confidence is under 80, or the AI review ended `changes requested`. Record it as a `note` on stage 9 (`Needs a human look: risk medium` or `No human look needed: risk low, confidence 92%, review lgtm`). The person decides who to ask; the pipeline never requests reviewers.
 
-Post one PR comment headed "Pipeline proof". A reviewer should get the state of the PR from the badges and the first table without reading further:
+Post one PR comment headed "Pipeline proof", holding evidence only:
 
 ```markdown
 ## Pipeline proof
 
-🟢 Merge risk: low · 🟢 Confidence: 92%
+<one line: what a human must look at and why, or `Nothing needs a human look.`>
 
-![merge risk](https://img.shields.io/badge/merge%20risk-low-2ea44f) ![confidence](https://img.shields.io/badge/confidence-92%25-2ea44f) ![review](https://img.shields.io/badge/AI%20review-lgtm-2ea44f) ![acceptance](https://img.shields.io/badge/acceptance-4%2F4-2ea44f) ![e2e](https://img.shields.io/badge/e2e-2%20lanes-blue)
+| Criterion | Evidence |
+| --- | --- |
+| ✅ Due date in the past is refused | `DueDateTest::past_date_refused` |
+| ⚠️ Error shows under the field | screenshot below; mobile width not driven |
 
-| Criterion | Met | Evidence |
-| --- | --- | --- |
-| Due date in the past is refused | ✅ | `DueDateTest::past_date_refused` |
-| Error shows under the field | ✅ | ![after](./after.jpg) |
+**Risks**
+- Rollback: files already uploaded stay after a revert. `app/Jobs/X.php:41`
 
-### 🟢 Merge risk: low
+**Not verified:** <lanes or criteria not driven live; pending checks>
 
-| Category | Verdict | Note |
-| --- | --- | --- |
-| Alignment | ✅ good | matches ticket, no drive-bys |
-| Impact | ✅ small | one validator, one component |
-| Verification | ✅ good | feature test + before/after screenshots |
-| Rollback cost | ✅ low | revert the commit |
-| Error detection | 👀 decent | validation errors are not logged; harmless here |
-
-<one line per ⚠️ with the file it points at, when there are any>
-
-### Review
-LGTM, 0 findings. Description matches the diff (92%). Reviewed by <backend> <model> at <effort> effort.
-
-### E2E
-<artifact link or screenshots>, lanes driven: <list>. Decided by the e2e decision agent (sonnet, low effort): <reason>.
-(or, skipped: Skipped: <reason>. Decided by the e2e decision agent (sonnet, low effort).)
-(append when you overrode it: ; overridden by the conductor: <why>)
-
-<last line, from the human-look decision>
+<at most 3 screenshots, one per visual criterion; the rest stay in the linked artifact>
 ```
 
-The last line is either `Risk medium · confidence 74% · needs a human look at <the area that raised the risk>.` or exactly `Risk low · confidence 92% · merge from the pane when checks are green.`
+- **Risks** prints the stage-8 bullets of the categories that are not ✅, each prefixed with its category; omit the heading when all five are ✅. **Not verified** is omitted when empty.
+- One test name or one live observation per row. A defect e2e found and fixed is one evidence row under its criterion.
+- No badges, no emoji status line, no risk table, no Review section, no model, effort or decision-agent names, no finding counts. Under 1200 characters before the screenshots.
 
-Badge colours: low/lgtm/all-met `2ea44f`, medium/partial `dbab09`, high/changes-requested/gaps `d73a4a`, counts `blue`. A skipped e2e gets a grey badge with the text `e2e-skipped`: `![e2e](https://img.shields.io/badge/e2e-skipped-9f9f9f)`. The confidence badge is the same number the status strip shows, coloured by the same thresholds. Attach screenshots with `gh pr comment <n> --body-file proof.md --attach ./after.jpg` run from `<criteriaDir>/e2e/` with relative paths, so the inline references rewrite. Refresh the status strip last, so the body, the proof comment and the pane agree. Swap labels to `aiVerified` and `readyToMerge` (a high merge risk keeps `stateReview` instead of `readyToMerge` and the comment says why).
+Attach screenshots with `gh pr comment <n> --body-file proof.md --attach ./after.jpg` run from `<criteriaDir>/e2e/` with relative paths, so the inline references rewrite. Refresh the status strip last, so the body, the proof comment and the pane agree. Swap labels to `aiVerified` and `readyToMerge` (a high merge risk keeps `stateReview` instead of `readyToMerge` and the first line says why).
 
 Post a short proof summary to the ticket where the tracker has comments (jira, github, linear): PR number and link, merge risk, confidence, acceptance `met/total`, review verdict, and whether it needs a human look. Text tracker: write it to `<criteriaDir>/proof.md`. Link the PR comment and the ticket comment to the stage, `{ action: "pr" }`, mark the stage `done` with summary `ready to merge · risk low` (or `ready for review · risk medium`).
 

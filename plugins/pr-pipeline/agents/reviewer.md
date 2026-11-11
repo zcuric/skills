@@ -13,7 +13,7 @@ Rules:
 - Read every cited file at the cited line before you report on it. A finding you did not verify in the code is not a finding.
 - Judge three things: correctness (bugs, missed branches, broken contracts), fit (does the diff do what the ticket's acceptance criteria ask, nothing less, nothing speculative more), and whether the PR description's claims are true of the diff.
 - Respect the repo's own rules in the files the prompt lists; a style finding that contradicts them is wrong.
-- Give each finding a confidence from 0 to 100: how sure you are that it is a real defect a reviewer would ask to change. Below 40, leave it out.
+- Give each finding a confidence from 0 to 100: how sure you are that it is a real defect a reviewer would ask to change. Below 50, leave it out. Never report praise, style, or a question you could answer by reading the ticket.
 
 Answer with JSON only, no prose around it:
 
@@ -29,8 +29,8 @@ Answer with JSON only, no prose around it:
       "line": 42,
       "severity": "high" | "medium" | "low",
       "confidence": 0-100,
-      "title": "short imperative title",
-      "body": "what is wrong, why it matters, the fix in one or two sentences",
+      "title": "the consequence, in plain words, under 60 characters",
+      "body": "when it happens and why in at most two sentences, then the fix in one",
       "suggestion": "optional replacement code for a GitHub suggestion block"
     }
   ]

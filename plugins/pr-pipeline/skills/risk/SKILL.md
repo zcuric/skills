@@ -43,12 +43,11 @@ Return exactly this, so the caller can paste it and the pipeline can parse it:
 **Alignment:** good ✅
 **Impact:** small ✅
 **Verification:** good ✅
-- before/after screenshots in ~/.claude/pipeline/acme-shop/ABC-123/e2e/
 **Rollback cost:** low ✅
 **Error detection:** decent 👀
-- `app/Jobs/SyncTags.php:41` catches and ignores the HTTP error; add a log line or let it fail
+- A failed tag sync goes unnoticed until a user reports missing tags. `app/Jobs/SyncTags.php:41`
 ```
 
-The first line carries the traffic light: 🟢 low, 🟡 medium, 🔴 high. Under each category, bullets only for gaps that raised the verdict, each pointing at a file and line. No bullets under a ✅ unless the evidence is worth naming. Keep it under 20 lines.
+The first line carries the traffic light: 🟢 low, 🟡 medium, 🔴 high. Under each category, bullets only for gaps that raised the verdict. No bullets under a ✅, ever. Each bullet is the consequence in one sentence plus one file:line. Keep it under 12 lines.
 
-Whichever model runs this skill, the verdict rules above are the same. When called from the pipeline, the caller records `risk`, the summary, each category line as a `did` and each ⚠️ as a `flag` on stage `risk`; the skill itself records nothing.
+Whichever model runs this skill, the verdict rules above are the same. When called from the pipeline, the caller records `risk`, the summary, each category line as a `did` and each ⚠️ as a `flag` on stage `risk`, and the proof prints only the bullets of the categories that are not ✅; the skill itself records nothing.

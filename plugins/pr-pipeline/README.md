@@ -39,16 +39,16 @@ At the start it asks you one question, at most, covering only what it cannot dec
 | 1 | Enhance | Reads the ticket, writes the acceptance criteria and a spec, posts the spec on the ticket, classifies the task and picks models |
 | 2 | Implement | Branches, reproduces a bug with a failing test first, implements, lints, tests, commits |
 | 3 | Create PR | Opens the PR with a skimmable body (link line, status strip, summary, one diagram, test plan) and labels |
-| 4 | AI review | Posts one review with line comments, confidence badges and an acceptance table; swaps the AI label |
+| 4 | AI review | Posts one review: a one-line verdict and a line comment per confirmed defect; swaps the AI label |
 | 5 | Address | Fixes findings, replies in each thread with the commit, resolves it; re-reviews once |
 | 6 | E2E verify | A quick decision first (see below); then drives the real app: the repo's e2e skill, else a browser smoke from `.claude/launch.json`, else skipped with the reason |
 | 7 | Acceptance | Checks every criterion with evidence (test, screenshot, log line); a gap loops back to stage 2 once |
 | 8 | Merge risk | Verdicts on alignment, impact, verification, rollback cost, error detection, and an overall low / medium / high |
-| 9 | Final proof | One PR comment with badges and tables, a summary on the ticket, and the decision on who reviews |
+| 9 | Final proof | One evidence-only PR comment, a summary on the ticket, and the decision on who reviews |
 
 ### When e2e is skipped
 
-Not every change needs the running app. Before stage 6 starts, a small decision agent (sonnet at low effort) looks at the task class, the acceptance criteria, the changed files and the repo's `e2ePolicy`. It runs e2e when a criterion names UI, a user flow, an integration, a job, a webhook or a sibling repo, or the work is a feature, business logic, architecture or sensitive. It skips e2e for copy, formatting, CSS-only tweaks, link changes, docs, infra, config and env changes, CI and dependency bumps. The pipeline can overrule it, but has to write down why. The reason shows in three places: the stage row in the pane (`Skipped by claude·sonnet·low: …`), the PR's status strip (`e2e: skipped · <reason> (decided by sonnet, low effort)`), and the proof comment's E2E section, with a grey `e2e skipped` badge. To force e2e, set `"e2ePolicy": "always"` in the repo profile, or say "run e2e" in your answer to the start question.
+Not every change needs the running app. Before stage 6 starts, a small decision agent (sonnet at low effort) looks at the task class, the acceptance criteria, the changed files and the repo's `e2ePolicy`. It runs e2e when a criterion names UI, a user flow, an integration, a job, a webhook or a sibling repo, or the work is a feature, business logic, architecture or sensitive. It skips e2e for copy, formatting, CSS-only tweaks, link changes, docs, infra, config and env changes, CI and dependency bumps. The pipeline can overrule it, but has to write down why. The reason shows in the stage row in the pane (`Skipped by claude·sonnet·low: …`) and in the e2e slot of the PR's status strip (`e2e: skipped · <reason>`). To force e2e, set `"e2ePolicy": "always"` in the repo profile, or say "run e2e" in your answer to the start question.
 
 ## What it costs
 
@@ -69,7 +69,7 @@ Each stage row in the pane carries a chip with the model that ran it (`opus·hig
 
 ## Nobody gets pinged
 
-The pipeline never requests reviewers, assigns the PR, or @-mentions anyone, on the PR or on the ticket. The proof comment ends with a plain verdict instead: `Risk low · confidence n% · merge from the pane when checks are green.`, or, when the merge risk is medium or high, the confidence is under 80% or the AI review asked for changes, `needs a human look at <area>`. Who to ask is your call.
+The pipeline never requests reviewers, assigns the PR, or @-mentions anyone, on the PR or on the ticket. The proof comment opens with one plain line instead: what a human must look at and why when the merge risk is medium or high, the confidence is under 80% or the AI review asked for changes, otherwise `Nothing needs a human look.` Who to ask is your call.
 
 ## Nothing to open on GitHub
 
