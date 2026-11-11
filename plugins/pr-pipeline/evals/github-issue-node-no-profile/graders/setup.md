@@ -10,4 +10,6 @@ Assert:
 - `{ action: "settings" }` is called; no backend question is asked (no other harness installed).
 - Class `quick-fix`, derived `tier: "S"`, class recorded in a `note` with cost `cheap`.
 - Criteria file at `~/.claude/pipeline/acme-widgets/issue-42/acceptance.md` (the absolute `criteriaDir` the profile action returned, `~` expanded), two unchecked criteria, none marked `(derived)`.
-- The spec is posted with `gh issue comment 42 --body-file …` and linked on stage 1.
+- The spec is written to `<criteriaDir>/spec.md` before stage 2, with the headings from `spec-format.md` (Goal, Today, Expected, Acceptance criteria, Verify), under 15 lines for this quick-fix, and its Today section cites a file the run opened.
+- The same text is posted with `gh issue comment 42 --body-file …` and linked on stage 1.
+- The stage-2 brief tells the implementer to read `<criteriaDir>/spec.md` and `acceptance.md` first.

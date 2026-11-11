@@ -90,7 +90,7 @@ One `AskUserQuestion` call, at most four questions, asked after the ticket is re
 
 ## Where stages run
 
-The pipeline session is the conductor. A stage routed to a session runs in a linked session started with `start_session` (initiation `user_asked`, context `fresh`, its own worktree); one routed to a subagent runs through the Agent tool with the routed `model` and `effort`. Every brief, at any stage, names the ticket, the branch, the resolved profile, `<criteriaDir>`, the model and effort, and the exact tool calls that record its stage, and includes the run key `start` returned with the instruction to pass it as `branch` on every `mcp__pr-pipeline__pipeline` call. Wait for the result and verify it (diff, PR, artifact) before moving on.
+The pipeline session is the conductor. A stage routed to a session runs in a linked session started with `start_session` (initiation `user_asked`, context `fresh`, its own worktree); one routed to a subagent runs through the Agent tool with the routed `model` and `effort`. Every brief, at any stage, opens by telling the reader to read `<criteriaDir>/spec.md` and `<criteriaDir>/acceptance.md` first (they started with none of this conversation), then names the ticket, the branch, the resolved profile, `<criteriaDir>`, the model and effort, and ends with the task and the exact tool calls that record its stage, and includes the run key `start` returned with the instruction to pass it as `branch` on every `mcp__pr-pipeline__pipeline` call. Wait for the result and verify it (diff, PR, artifact) before moving on.
 
 `start_session` is refused on a turn that an event started (a side-session note, a CI monitor event): run the stage in a subagent here instead and record `flag: "Ran in a subagent; start_session unavailable on an event-driven turn"`. In the CLI or under `-p`, always use subagents.
 
@@ -110,7 +110,15 @@ The person follows the PR in the pane: its Pull request card shows checks, revie
 
 ### 1. Enhance
 
-Detect the tracker and fetch the ticket (`trackers.md`), `start` the run, call `{ action: "profile" }`, record stage 1 `running`, then settle the rest of the setup above. Extract the acceptance criteria verbatim into `<criteriaDir>/acceptance.md`, one checkbox per criterion; where the ticket has none, derive them from the description and comments, mark them `(derived)` and flag it. Rewrite the ticket into a spec: problem, expected behaviour, out of scope, repos touched, risks, and for a bug the reproduction steps you will use. Classify, ask the stage-1 question, fold its answers into the spec, then post the spec as a ticket comment headed "Pipeline spec" (text tracker: `<criteriaDir>/spec.md`) and link the comment to the stage. Record the stage `done` with `tier`, the class `note`, and confidence: how complete the criteria are (100 when the ticket had explicit, testable criteria).
+The spec this stage writes is the brief every later stage works from, so the order matters:
+
+1. Detect the tracker and fetch the ticket (`trackers.md`), `start` the run, call `{ action: "profile" }`, record stage 1 `running`, then settle the rest of the setup above.
+2. Read `spec-format.md` from this skill's directory, then read around the ticket as it says: comments, linked and parent tickets, attachments, and the code the change will touch.
+3. Extract the acceptance criteria word for word into `<criteriaDir>/acceptance.md`, one checkbox per criterion. Where the ticket has none, derive them from the description and comments, mark each `(derived)` and `flag` it.
+4. Classify the ticket and draft the spec in the format `spec-format.md` gives.
+5. Ask the stage-1 question and fold its answers into the spec's Decisions.
+6. Write the spec to `<criteriaDir>/spec.md`, for every tracker: it is the file the stage-2 brief points at. Then post the same text as a ticket comment headed "Pipeline spec" (the text tracker has no comment) and `link` the comment to the stage.
+7. Record the stage `done` with `tier`, the class `note`, and confidence: how complete the criteria are (100 when the ticket had explicit, testable criteria).
 
 ### 2. Implement
 
