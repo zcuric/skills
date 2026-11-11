@@ -134,11 +134,11 @@ The run closes itself and leaves the Runs switcher: five minutes after the pane 
 
 ## Reviewer backends
 
-The AI review runs on claude by default (opus at low effort unless the task class routes otherwise). When Codex CLI or OpenCode is installed, the first run asks once which backend and model to use and saves the answer. Change it any time in the pane's Settings card or with `/config` (`pr-pipeline.reviewer`, `pr-pipeline.review_model`, `pr-pipeline.review_effort`).
+The AI review runs on claude by default (opus at low effort unless the task class routes otherwise). When Codex CLI or OpenCode is installed, the first run asks once which backend and model to use and saves the answer. Change it any time in the pane's Settings (`⚙ Settings` at the top of the pane) or with `/config` (`pr-pipeline.reviewer`, `pr-pipeline.review_model`, `pr-pipeline.review_effort`).
 
 - **codex**: runs `codex exec` in a read-only sandbox; effort maps to `model_reasoning_effort` (low, medium, high).
 - **opencode**: runs `opencode run --model provider/model`; effort is ignored; any file it touches is reverted and flagged.
-- **custom**: any other agent CLI. Set `review_command` to a command that takes the review prompt on stdin and prints its answer, with `{model}` where the model name goes (`your-agent --print --model {model}`). Effort is ignored; any file it touches is reverted and flagged. The command is read from your own settings only, never from a repo file, a ticket or a PR, and the pipeline cannot set it for you: you type it in `/config` or the Settings card.
+- **custom**: any other agent CLI. Set `review_command` to a command that takes the review prompt on stdin and prints its answer, with `{model}` where the model name goes (`your-agent --print --model {model}`). Effort is ignored; any file it touches is reverted and flagged. The command is read from your own settings only, never from a repo file, a ticket or a PR, and the pipeline cannot set it for you: you type it in `/config` or the pane's Settings.
 
 The security pass and the verifier run on the same backend as the review.
 
@@ -161,7 +161,7 @@ The prompts also work on their own, in any agent or in CI: [`agents/reviewer.md`
 
 ## Settings
 
-All in `/config` under `pr-pipeline`. The pane's Settings card edits all of them: the reviewer with its model and effort (a list of claude models, or any model id for the other reviewers), the review command once the reviewer is `custom`, the tracker and the merge method:
+All in `/config` under `pr-pipeline`. `⚙ Settings` at the top of the pane opens a view that edits all of them: the reviewer with its model and effort (a list of claude models, or any model id for the other reviewers), the review command once the reviewer is `custom`, the tracker and the merge method:
 
 | Setting | Default | Meaning |
 | --- | --- | --- |

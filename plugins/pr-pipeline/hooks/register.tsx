@@ -4,7 +4,7 @@ import type { EngineInterface, Register } from 'claude-code'
 import type { PipelineOptions, PipelineRun, PipelineToolInput, PrSnapshot, PrState, RepoRef, Runs, Stage, StageId } from '../types'
 import { chip, confidenceTone, gauge, INK, isGraphic, pulse, RISK_TONE, STATUS_TONE, tint, track } from './look'
 import type { Tone } from './look'
-import { card, duration, elapsed, isHuman, prCard, settingsCard, stageDetail, STATUS_GLYPH, submitPrompt, threadsCard } from './pane-pr'
+import { card, duration, elapsed, isHuman, isSettingsOpen, prCard, settingsGear, settingsView, stageDetail, STATUS_GLYPH, submitPrompt, threadsCard } from './pane-pr'
 import type { PaneContext, PaneEvent } from './pane-pr'
 import { deltaReviewPrompt, failingRunIds, fixCiPrompt, heldKey, isPollDue, prRefOf, refreshPr, staleVerdictText, syncPrompt, tick } from './pr'
 import {
@@ -106,6 +106,7 @@ async function renderPane($: EngineInterface, e: PaneEvent, options: PipelineOpt
   const run = key === null ? undefined : all[key]
   const openTo = (id: StageId | null) => () => update($, openStage, () => id)
 
+  if (await isSettingsOpen($)) return settingsView($, e, options, run)
   if (key === null || run === undefined) {
     const last = Object.values(all)
       .filter(one => one.closedAt !== undefined)
@@ -113,6 +114,7 @@ async function renderPane($: EngineInterface, e: PaneEvent, options: PipelineOpt
     const lastLine = last === undefined ? '' : `${runName(last)}${last.mergedAt !== undefined ? ' merged ·' : ''} closed ${duration(now - (last.closedAt ?? now))} ago`
     return (
       <Box flexDirection="column" rowGap={1} paddingX={1} paddingY={1}>
+        {settingsGear($, e)}
         {card(els, 'empty', [
           <Text key="empty:title" size="heading" weight="bold">{last === undefined ? 'No pipeline run yet' : 'No open pipeline run'}</Text>,
           <Text key="empty:hint" dimColor wrap="wrap">Type /pipeline with a ticket key (ABC-123), a GitHub issue (#123), a PR URL, or the task in words.</Text>,
@@ -289,6 +291,7 @@ async function renderPane($: EngineInterface, e: PaneEvent, options: PipelineOpt
 
   return (
     <Box flexDirection="column" rowGap={1} paddingX={1} paddingY={1}>
+      {settingsGear($, e)}
       {switcher}
       {header}
       {attentionStrip}
@@ -300,7 +303,6 @@ async function renderPane($: EngineInterface, e: PaneEvent, options: PipelineOpt
         gap: 0,
       })}
       {await stageDetail($, e, ctx)}
-      {await settingsCard($, e, ctx)}
     </Box>
   )
 }

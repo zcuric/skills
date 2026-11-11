@@ -50,7 +50,7 @@ export type Booted = {
   tools: Array<{ name: string; isDeferred?: boolean }>
 }
 
-export function boot(on: On, routes: readonly Route[] = [], options: { now?: number; cwd?: string } = {}): Booted {
+export function boot(on: On, routes: readonly Route[] = [], options: { now?: number; cwd?: string; configDeny?: string } = {}): Booted {
   const clock = mock.clock(on, { now: options.now ?? 1_000_000 })
   mock.env(on, { PATH: '/usr/bin', HOME: '/home/dev' })
   const prompts: string[] = []
@@ -83,6 +83,7 @@ export function boot(on: On, routes: readonly Route[] = [], options: { now?: num
     return { text: e.text }
   })
   on('config.set', (_$, e) => {
+    if (options.configDeny !== undefined) return { deny: options.configDeny }
     configs.push({ key: e.key, value: e.value })
     return { value: e.value }
   })

@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
-import type { Elements, EngineInterface, RenderChildren, RenderInput, RenderSurface, SelectOption } from 'claude-code'
+import type { Elements, EngineInterface, RenderChildren, RenderInput, RenderSurface } from 'claude-code'
 
-import type { Harnesses, Met, PipelineOptions, PipelineRun, PrSnapshot, PrState, PrThread, ReplyBox, Stage, StageId, StageStatus } from '../types'
+import type { Harnesses, Met, PendingSettings, PipelineOptions, PipelineRun, PrSnapshot, PrState, PrThread, ReplyBox, Stage, StageId, StageStatus } from '../types'
 import { mergeGuard } from './github'
 import {
   failedChecks,
@@ -44,6 +44,7 @@ const drafts = atom({ plugin: 'pr-pipeline', key: 'drafts' } as const, {} as Rec
 const prBusy = atom({ plugin: 'pr-pipeline', key: 'prBusy' } as const, null as string | null)
 const harnesses = atom({ plugin: 'pr-pipeline', key: 'harnesses' } as const, null as Harnesses | null)
 const settingsOpen = atom({ plugin: 'pr-pipeline', key: 'settingsOpen' } as const, false)
+const settingsPending = atom({ plugin: 'pr-pipeline', key: 'settingsPending' } as const, {} as PendingSettings)
 const showResolved = atom({ plugin: 'pr-pipeline', key: 'showResolved' } as const, false)
 
 export type PaneEvent = RenderInput<'Pane'>
@@ -394,94 +395,158 @@ export async function threadsCard($: EngineInterface, e: PaneEvent, ctx: PaneCon
   })
 }
 
-export async function writeSetting($: EngineInterface, field: keyof PipelineOptions, value: string): Promise<void> {
-  const written = await $.config.set({ key: `pr-pipeline.${field}`, value })
-  if ('deny' in written && written.deny !== undefined) $.ui.toast(`Setting ${field} refused: ${written.deny}`)
+/** The pane's only write path: the pick shows at once, through a pending entry, until the reloaded options carry it. */
+export async function writeSetting($: EngineInterface, live: PipelineOptions, field: keyof PipelineOptions, value: string): Promise<void> {
+  const at = await $.clock.now()
+  await update($, settingsPending, all => ({ ...all, [field]: { value, from: String(live[field]), at } }))
+  const written = await $.config.set({ key: `pr-pipeline.${field}`, value }).catch((err: unknown) => ({ deny: String(err) }))
+  if (written.deny === undefined) return
+  await update($, settingsPending, ({ [field]: _refused, ...rest }) => rest)
+  await $.ui.toast(`Setting ${field} refused: ${written.deny}`)
 }
 
-const OPTIONAL_TOOLS = ['codex', 'opencode'] as const
+/** The options as the person last picked them: a pending pick holds while the live value is still the one it replaced. */
+async function shownOptions($: EngineInterface, live: PipelineOptions): Promise<PipelineOptions> {
+  const pending = await read($, settingsPending)
+  const now = await $.clock.now()
+  const picked = Object.entries(pending)
+    .filter(([field, entry]) => entry !== undefined && now - entry.at < PENDING_MS && String(live[field as keyof PipelineOptions]) === entry.from)
+    .map(([field, entry]) => [field, entry?.value])
+  return { ...live, ...Object.fromEntries(picked) } as PipelineOptions
+}
 
 const isMissing = (found: Harnesses | null, tool: keyof Omit<Harnesses, 'checkedAt'>): boolean =>
   found !== null && found[tool] === null
 
-/** Why the chosen reviewer cannot run, as a short chip and a full sentence; null when it can. */
-function reviewerProblem(options: PipelineOptions, found: Harnesses | null): { short: string; line: string } | null {
+/** Why the chosen reviewer cannot run, as a full sentence; null when it can. */
+function reviewerProblem(options: PipelineOptions, found: Harnesses | null): string | null {
   const { reviewer } = options
-  if (reviewer === 'custom' && options.review_command === '') {
-    return { short: 'no review command', line: 'No review command set. Reviews fall back to claude.' }
-  }
-  if ((reviewer === 'codex' || reviewer === 'opencode') && isMissing(found, reviewer)) {
-    return { short: `${reviewer} not installed`, line: `${reviewer} is not installed. Reviews fall back to claude.` }
-  }
+  if (reviewer === 'custom' && options.review_command === '') return 'No review command set. Reviews fall back to claude.'
+  if ((reviewer === 'codex' || reviewer === 'opencode') && isMissing(found, reviewer)) return `${reviewer} is not installed. Reviews fall back to claude.`
   return null
 }
 
-const groupLabel = (els: Els, key: string, text: string) =>
-  <els.Text key={key} dimColor size="footnote" weight="semibold">{text}</els.Text>
+type SettingsScope = { els: Els; live: PipelineOptions; shown: PipelineOptions; found: Harnesses | null; canEdit: boolean }
 
-function settingsGroup(els: Els, key: string, label: string, rows: RenderChildren[]) {
-  return <els.Box key={key} flexDirection="column">{[groupLabel(els, `${key}:label`, label), ...rows]}</els.Box>
+const PENDING_MS = 60_000
+const PILL_NAME: Record<keyof PipelineOptions, string> = {
+  reviewer: 'reviewer', review_model: 'model', review_command: 'command', review_effort: 'effort', tracker: 'tracker', merge_method: 'merge',
 }
 
-function toolChips(els: Els, found: Harnesses | null) {
+function pick($: EngineInterface, live: PipelineOptions, field: keyof PipelineOptions, value: string): () => void {
+  return () => void writeSetting($, live, field, value).catch(err => $.ui.toast(String(err)))
+}
+
+function selectedPill(els: Els, key: string, value: string, tone: Tone) {
   const { Box, Text } = els
-  if (found === null) return <Text key="settings:tools" dimColor size="footnote">checking tools…</Text>
-  const gh = found.gh === null ? chip(els, 'gh missing', 'bad', { key: 'tool:gh' }) : chip(els, 'gh ✓', 'good', { key: 'tool:gh' })
-  const optional = OPTIONAL_TOOLS.map(tool => found[tool] === null
-    ? chip(els, `${tool} –`, 'muted', { key: `tool:${tool}` })
-    : chip(els, `${tool} ✓`, 'good', { key: `tool:${tool}` }))
-  return <Box key="settings:tools" flexDirection="row" flexWrap="wrap" gap={1}>{[gh, ...optional]}</Box>
-}
-
-type SettingField = { key: string; field: keyof PipelineOptions; label: string; values: ReadonlyArray<SelectOption> }
-
-function settingRow($: EngineInterface, e: PaneEvent, ctx: PaneContext, one: SettingField) {
-  const els = $.ui.resolve(e)
-  const value = String(ctx.options[one.field])
-  if (e.surface === 'mobile' || !('Select' in els)) return <els.Text key={one.key}>{`${one.label}: ${value}`}</els.Text>
+  const graphic = isGraphic(els)
   return (
-    <els.Select key={one.key} label={one.label} value={value} options={one.values}
-      onSelect={picked => void writeSetting($, one.field, picked).catch(err => $.ui.toast(String(err)))} />
+    <Box key={`${key}:pill`} backgroundColor={tint(els, tone, 0.18)} paddingX={graphic ? 1 : 0}>
+      <Text color={INK[tone]} inverse={!graphic} weight="bold">{graphic ? value : ` ${value} `}</Text>
+    </Box>
   )
 }
 
-const plainOptions = (values: readonly string[]): SelectOption[] => values.map(value => ({ value }))
+/** One pill per value: the chosen one lit, the others one press away, a missing tool named and inert. */
+function optionPills($: EngineInterface, scope: SettingsScope, field: keyof PipelineOptions, values: readonly string[], options: { missing?: readonly string[]; tone?: Tone } = {}) {
+  const { els } = scope
+  const { Box, Text, Button } = els
+  const name = PILL_NAME[field]
+  const current = String(scope.shown[field])
+  const pad = isGraphic(els) ? 1 : 0
+  const label = (text: string) => (isGraphic(els) ? text : ` ${text} `)
+  const pills = values.map(value => {
+    const key = `set:${name}:${value}`
+    if (value === current) return selectedPill(els, key, value, options.tone ?? 'info')
+    if (options.missing?.includes(value)) {
+      return <Box key={`${key}:pill`} paddingX={pad}><Text dimColor>{label(`${value} · not installed`)}</Text></Box>
+    }
+    return (
+      <Box key={`${key}:pill`} paddingX={pad} backgroundColor={tint(els, 'muted', 0.12)} hover={{ backgroundColor: tint(els, 'info', 0.16) }}>
+        <Button key={key} plain onPress={pick($, scope.live, field, value)}><Text dimColor>{label(value)}</Text></Button>
+      </Box>
+    )
+  })
+  return <Box key={`set:${name}:pills`} flexDirection="row" flexWrap="wrap" columnGap={1}>{pills}</Box>
+}
 
-function modelRow($: EngineInterface, e: PaneEvent, ctx: PaneContext) {
-  const els = $.ui.resolve(e)
-  const { options } = ctx
-  const isEditable = e.surface !== 'mobile' && 'Input' in els
-  if (options.reviewer === 'claude' || !isEditable) {
+function settingBlock(els: Els, key: string, label: string, description: string | null, body: RenderChildren[]) {
+  const { Box, Text } = els
+  return (
+    <Box key={key} flexDirection="column">
+      <Box flexDirection="row" flexWrap="wrap" alignItems="center" columnGap={2}>
+        <Text weight="semibold">{label}</Text>
+        {description === null ? null : <Text dimColor size="footnote">{description}</Text>}
+      </Box>
+      {body}
+    </Box>
+  )
+}
+
+/** A bordered tinted block like the attention strip: a warning or a blocker. */
+function notice(els: Els, key: string, tone: Tone, text: string) {
+  const { Box, Text } = els
+  return (
+    <Box key={key} flexDirection="row" gap={1} paddingX={2} paddingY={1}
+      borderStyle="round" borderColor={INK[tone]} backgroundColor={tint(els, tone, 0.1)}>
+      <Text color={INK[tone]} weight="bold">⚠</Text>
+      <Text key={`${key}:text`} color={INK[tone]} wrap="wrap">{text}</Text>
+    </Box>
+  )
+}
+
+function reviewerBlock($: EngineInterface, scope: SettingsScope) {
+  const { shown, found } = scope
+  const missing = (['codex', 'opencode'] as const).filter(tool => isMissing(found, tool) && tool !== shown.reviewer)
+  const tone: Tone = reviewerProblem(shown, found) === null ? 'info' : 'warn'
+  return settingBlock(scope.els, 'settings:reviewer', 'Reviewer', 'Who reviews the pull request at stage 4.', [
+    optionPills($, scope, 'reviewer', BACKENDS, { missing, tone }),
+  ])
+}
+
+function modelBlock($: EngineInterface, scope: SettingsScope) {
+  const { els, shown } = scope
+  if (shown.reviewer === 'claude') {
     const models: readonly string[] = CLAUDE_MODELS
-    const values = models.includes(options.review_model) ? models : [...models, options.review_model]
-    return settingRow($, e, ctx, { key: 'set:model', field: 'review_model', label: 'Model', values: plainOptions(values) })
+    const values = models.includes(shown.review_model) ? models : [...models, shown.review_model]
+    return settingBlock(els, 'settings:model', 'Model', null, [optionPills($, scope, 'review_model', values)])
   }
+  if (!scope.canEdit || !('Input' in els)) return <els.Text key="settings:model">{`Model: ${shown.review_model}`}</els.Text>
   const saveModel = (value: string) => {
     const model = value.trim()
     if (model === '') {
       void $.ui.toast('Review model cannot be empty')
       return
     }
-    void writeSetting($, 'review_model', model).catch(err => $.ui.toast(String(err)))
+    pick($, scope.live, 'review_model', model)()
   }
-  return (
-    <els.Input key="set:model" label="Model" placeholder="model id the CLI accepts" submitLabel="Save"
-      value={options.review_model} onSubmit={saveModel} />
-  )
+  return settingBlock(els, 'settings:model', 'Model', null, [
+    <els.Input key="set:model" placeholder="model id the CLI accepts" submitLabel="Save" value={shown.review_model} onSubmit={saveModel} />,
+  ])
 }
 
-function commandRows($: EngineInterface, e: PaneEvent, ctx: PaneContext): RenderChildren[] {
-  const els = $.ui.resolve(e)
+function effortBlock($: EngineInterface, scope: SettingsScope) {
+  const { els, shown } = scope
+  const hint = shown.reviewer === 'claude'
+    ? 'Defaults. A run\'s task class can route a different model and effort.'
+    : 'Every review runs with this model and effort.'
+  return settingBlock(els, 'settings:effort', 'Effort', null, [
+    optionPills($, scope, 'review_effort', EFFORTS),
+    <els.Text key="settings:hint" dimColor size="footnote" wrap="wrap">{hint}</els.Text>,
+  ])
+}
+
+function commandBlock($: EngineInterface, scope: SettingsScope) {
+  const { els, shown } = scope
   const { Text } = els
-  const { options } = ctx
-  if (options.reviewer !== 'custom') return []
-  if (e.surface === 'mobile' || !('Input' in els)) {
-    return [
+  if (shown.reviewer !== 'custom') return null
+  if (!scope.canEdit || !('Input' in els)) {
+    return (
       <Text key="settings:command" wrap="wrap">
-        {`Review command: ${options.review_command || 'not set'}`}
+        {`Review command: ${shown.review_command || 'not set'}`}
         <Text dimColor>{'  /config pr-pipeline.review_command'}</Text>
-      </Text>,
-    ]
+      </Text>
+    )
   }
   const saveCommand = (value: string) => {
     const command = value.trim()
@@ -489,67 +554,75 @@ function commandRows($: EngineInterface, e: PaneEvent, ctx: PaneContext): Render
       void $.ui.toast(`Review command is longer than ${REVIEW_COMMAND_MAX} characters`)
       return
     }
-    void writeSetting($, 'review_command', command).catch(err => $.ui.toast(String(err)))
+    pick($, scope.live, 'review_command', command)()
   }
-  return [
-    <els.Input key="set:review_command" label="Command" placeholder="agent-cli --model {model}" submitLabel="Save"
-      value={options.review_command} onSubmit={saveCommand} />,
+  return settingBlock(els, 'settings:command', 'Command', null, [
+    <els.Input key="set:review_command" placeholder="agent-cli --model {model}" submitLabel="Save" value={shown.review_command} onSubmit={saveCommand} />,
     <Text key="settings:command:hint" dimColor size="footnote" wrap="wrap">{'Prompt on stdin, answer on stdout. {model} becomes the model above.'}</Text>,
-  ]
-}
-
-function reviewGroup($: EngineInterface, e: PaneEvent, ctx: PaneContext, found: Harnesses | null) {
-  const els = $.ui.resolve(e)
-  const { Text } = els
-  const { options } = ctx
-  const reviewers = BACKENDS.map(value => (value === 'codex' || value === 'opencode') && isMissing(found, value)
-    ? { value, label: `${value} · not installed` }
-    : { value })
-  const problem = reviewerProblem(options, found)
-  const hint = options.reviewer === 'claude'
-    ? 'Defaults. A run\'s task class can route a different model and effort.'
-    : 'Every review uses this model.'
-  return settingsGroup(els, 'settings:review', 'Review', [
-    settingRow($, e, ctx, { key: 'set:reviewer', field: 'reviewer', label: 'Reviewer', values: reviewers }),
-    modelRow($, e, ctx),
-    settingRow($, e, ctx, { key: 'set:effort', field: 'review_effort', label: 'Effort', values: plainOptions(EFFORTS) }),
-    ...commandRows($, e, ctx),
-    <Text key="settings:hint" dimColor size="footnote" wrap="wrap">{hint}</Text>,
-    problem === null ? null : <Text key="settings:warning" color={INK.warn} wrap="wrap">{problem.line}</Text>,
   ])
 }
 
-export async function settingsCard($: EngineInterface, e: PaneEvent, ctx: PaneContext): Promise<RenderChildren> {
+function reviewCard($: EngineInterface, scope: SettingsScope) {
+  const problem = reviewerProblem(scope.shown, scope.found)
+  return card(scope.els, 'settings:review', [
+    reviewerBlock($, scope),
+    modelBlock($, scope),
+    effortBlock($, scope),
+    commandBlock($, scope),
+    problem === null ? null : notice(scope.els, 'settings:warning', 'warn', problem),
+  ], { title: 'AI review' })
+}
+
+function pullRequestCard($: EngineInterface, scope: SettingsScope, run: PipelineRun | undefined) {
+  const { els, shown } = scope
+  const runMethod = run?.mergeMethod
+  const override = runMethod !== undefined && runMethod !== shown.merge_method
+    ? <els.Text key="settings:merge:run" dimColor size="footnote" wrap="wrap">{`This run merges with ${runMethod}, set by the repo profile.`}</els.Text>
+    : null
+  return card(els, 'settings:pr', [
+    settingBlock(els, 'settings:tracker', 'Tracker', 'Where tickets live. auto works it out from the ticket.', [optionPills($, scope, 'tracker', TRACKER_SETTINGS)]),
+    settingBlock(els, 'settings:merge', 'Merge', 'What the Merge button does.', [optionPills($, scope, 'merge_method', MERGE_METHODS), override]),
+  ], { title: 'Pull request' })
+}
+
+function showSettings($: EngineInterface, isOpen: boolean): () => Promise<unknown> {
+  return () => update($, settingsOpen, () => isOpen)
+}
+
+/** The pane's top row: the way into Settings, always drawn. */
+export function settingsGear($: EngineInterface, e: PaneEvent) {
+  const { Box, Button } = $.ui.resolve(e)
+  return (
+    <Box key="top" flexDirection="row" justifyContent="flex-end">
+      <Button key="settings:toggle" plain dimColor label="⚙ Settings" onPress={showSettings($, true)} />
+    </Box>
+  )
+}
+
+export async function isSettingsOpen($: EngineInterface): Promise<boolean> {
+  return read($, settingsOpen)
+}
+
+/** Settings as its own view, drawn instead of the run. */
+export async function settingsView($: EngineInterface, e: PaneEvent, live: PipelineOptions, run: PipelineRun | undefined) {
   const els = $.ui.resolve(e)
   const { Box, Text, Button } = els
-  const isOpen = await read($, settingsOpen)
   const found = await read($, harnesses)
-  const { options } = ctx
-  const toggle = (
-    <Button key="settings:toggle" plain dimColor={!isOpen} label={`${isOpen ? '▾' : '▸'} Settings`}
-      onPress={() => update($, settingsOpen, value => !value)} />
-  )
-  if (!isOpen) {
-    const problem = reviewerProblem(options, found)
-    const summary = [options.reviewer, options.review_model, options.review_effort, options.merge_method].join(' · ')
-    return (
-      <Box key="settings" paddingX={1} flexDirection="row" flexWrap="wrap" alignItems="center" gap={1}>
-        {toggle}
-        <Text key="settings:summary" dimColor size="footnote">{summary}</Text>
-        {problem === null ? null : chip(els, problem.short, 'warn', { key: 'settings:problem' })}
+  const scope: SettingsScope = { els, live, shown: await shownOptions($, live), found, canEdit: e.surface !== 'mobile' }
+  return (
+    <Box flexDirection="column" rowGap={1} paddingX={1} paddingY={1}>
+      <Box key="settings:top" flexDirection="column">
+        <Box flexDirection="row" alignItems="center" gap={2}>
+          <Button key="settings:back" plain dimColor label="‹ Back" onPress={showSettings($, false)} />
+          <Text size="title" weight="bold">Settings</Text>
+        </Box>
+        <Text dimColor size="footnote">Apply to every run. Saved in /config under pr-pipeline.</Text>
       </Box>
-    )
-  }
-
-  return card(els, 'settings', [
-    toggle,
-    reviewGroup($, e, ctx, found),
-    settingsGroup(els, 'settings:pr', 'Pull request', [
-      settingRow($, e, ctx, { key: 'set:tracker', field: 'tracker', label: 'Tracker', values: plainOptions(TRACKER_SETTINGS) }),
-      settingRow($, e, ctx, { key: 'set:merge', field: 'merge_method', label: 'Merge', values: plainOptions(MERGE_METHODS) }),
-    ]),
-    settingsGroup(els, 'settings:toolsGroup', 'Tools', [toolChips(els, found)]),
-  ])
+      {isMissing(found, 'gh') ? notice(els, 'settings:gh', 'bad', 'gh is not installed. The pipeline cannot open or read pull requests.') : null}
+      {reviewCard($, scope)}
+      {pullRequestCard($, scope, run)}
+    </Box>
+  )
 }
 
 export async function stageDetail($: EngineInterface, e: PaneEvent, ctx: PaneContext): Promise<RenderChildren> {

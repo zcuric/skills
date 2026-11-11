@@ -192,6 +192,11 @@ export type PipelineOptions = {
 
 export type PipelineSettingsPatch = Partial<PipelineOptions>
 
+/** A pick the pane wrote, shown while the live option still holds `from`, the value it replaced */
+export type PendingSetting = { value: string; from: string; at: number }
+
+export type PendingSettings = Partial<Record<keyof PipelineOptions, PendingSetting>>
+
 declare module 'claude-code' {
   interface PluginState {
     'pr-pipeline': {
@@ -209,6 +214,8 @@ declare module 'claude-code' {
       harnesses: Harnesses | null
       repos: Record<string, RepoRef | null>
       settingsOpen: boolean
+      /** Settings picks waiting for the reloaded options to carry them */
+      settingsPending: PendingSettings
       showResolved: boolean
     }
   }

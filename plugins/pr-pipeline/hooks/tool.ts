@@ -109,7 +109,7 @@ const isValidSetting = (field: string, value: unknown, options: PipelineOptions)
 
 const settingsRefusal = (set: Record<string, unknown>, options: PipelineOptions): string | null => {
   if ('review_command' in set) {
-    return '"review_command" is a shell command, so only a person sets it: in /config pr-pipeline.review_command or the pane\'s Settings card.'
+    return '"review_command" is a shell command, so only a person sets it: in /config pr-pipeline.review_command or the pane\'s Settings.'
   }
   if (set.reviewer === 'custom' && options.review_command === '') {
     return 'reviewer "custom" needs a review_command to run: ask the person to set /config pr-pipeline.review_command first.'
