@@ -220,7 +220,7 @@ test('a link adopts a PR only when the run has none or on the pr stage from its 
   expect((await $.tool.call({ tool: TOOL, action: 'unlink', branch: 'b', stage: 'pr', href: 'https://example.com/nope' })).deny).toMatch(/no link/)
 })
 
-test('the pane shows run age, finished stage durations and a stalled stage', async ($, on) => {
+test('the pane shows last update, finished stage durations and a stalled stage', async ($, on) => {
   const { clock } = boot(on)
   mock.store(on)
   await $.session.start(START)
@@ -231,7 +231,7 @@ test('the pane shows run age, finished stage durations and a stalled stage', asy
   await $.tool.call({ tool: TOOL, action: 'stage', branch: 'b', stage: 'implement', status: 'running' })
 
   const fresh = await $.ui.mount({ ...PANE, surface: 'desktop' })
-  expect(await fresh.find({ type: 'Text', text: /^started 2m ago · updated 0s ago$/ })).toBeDefined()
+  expect(await fresh.find({ type: 'Text', text: /^1\/9 done · updated 0s ago$/ })).toBeDefined()
   expect(await fresh.find({ type: 'Text', text: /^2m$/ })).toBeDefined()
   expect(await fresh.find({ key: 'attn:stalled' })).toBeUndefined()
   await fresh.unmount()

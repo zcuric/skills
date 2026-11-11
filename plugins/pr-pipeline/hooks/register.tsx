@@ -63,21 +63,16 @@ function prAttention($: EngineInterface, run: PipelineRun, snapshot: PrSnapshot 
   return items.filter((item): item is Attention => item !== null)
 }
 
-function runState(run: PipelineRun, now: number): { text: string; color: Color; aside?: string; currentId?: StageId } {
-  const failed = run.stages.find(stage => stage.status === 'failed')
-  if (failed) return { text: `${STATUS_GLYPH.failed} Failed at ${stageLabel(failed.id)}`, color: 'red', currentId: failed.id }
-  const running = run.stages.find(stage => stage.status === 'running')
-  if (running) return { text: `${STATUS_GLYPH.running} Running: ${stageLabel(running.id)}`, color: 'yellow', aside: elapsed(running, now), currentId: running.id }
-  const next = run.stages.find(stage => stage.status === 'pending')
-  if (next === undefined) return { text: `${STATUS_GLYPH.done} Ready for human review`, color: 'green' }
-  if (run.stages.every(stage => stage.status === 'pending')) return { text: `${STATUS_GLYPH.pending} Not started`, color: undefined, currentId: next.id }
-  return { text: `${STATUS_GLYPH.pending} Next: ${stageLabel(next.id)}`, color: undefined, currentId: next.id }
+/** The failed, else running, else next pending stage; undefined once every stage has ended. */
+function currentStageId(run: PipelineRun): StageId | undefined {
+  return (run.stages.find(stage => stage.status === 'failed')
+    ?? run.stages.find(stage => stage.status === 'running')
+    ?? run.stages.find(stage => stage.status === 'pending'))?.id
 }
 
 /** `◐ AI review`, `✕ Address`, `● done` for a Runs switcher row. */
-function runBrief(run: PipelineRun, now: number): { text: string; color: Color } {
-  const state = runState(run, now)
-  const current = run.stages.find(stage => stage.id === state.currentId)
+function runBrief(run: PipelineRun): { text: string; color: Color } {
+  const current = run.stages.find(stage => stage.id === currentStageId(run))
   if (current === undefined) return { text: `${STATUS_GLYPH.done} done`, color: 'green' }
   return { text: `${STATUS_GLYPH[current.status]} ${stageLabel(current.id)}`, color: STATUS_COLOR[current.status] }
 }
@@ -117,13 +112,13 @@ async function renderPane($: EngineInterface, e: PaneEvent, options: PipelineOpt
   const ctx: PaneContext = { key, run, now, options }
   const cwdRepo = (await read($, repos))[await $.session.cwd()]?.slug
   const snapshot = (await read($, prStates))[key]?.snapshot
-  const state = runState(run, now)
+  const currentId = currentStageId(run)
   const confidence = runConfidence(run)
   const openRuns = Object.values(all).filter(isOpenRun).sort((a, b) => b.updatedAt - a.updatedAt)
   const prNumber = prRefOf(run)?.number
 
   const switcher = openRuns.length < 2 ? null : card(els, 'runs', openRuns.map(one => {
-    const brief = runBrief(one, now)
+    const brief = runBrief(one)
     return (
       <Button key={`run:${one.key}`} plain onPress={() => update($, selectedKey, () => one.key).then(openTo(null))}>
         <Text weight={one.repo !== undefined && one.repo === cwdRepo ? 'bold' : 'regular'} dimColor={one.key !== key}>
@@ -201,35 +196,13 @@ async function renderPane($: EngineInterface, e: PaneEvent, options: PipelineOpt
   const doneCount = run.stages.filter(stage => stage.status === 'done' || stage.status === 'skipped').length
   const isFinished = run.stages.every(stage => stage.status !== 'pending' && stage.status !== 'running')
   const lastFinish = Math.max(0, ...run.stages.map(stage => stage.finishedAt ?? 0))
-  const times = [
-    run.startedAt !== undefined ? `started ${duration(now - run.startedAt)} ago` : null,
-    `updated ${duration(now - run.updatedAt)} ago`,
-    run.startedAt !== undefined && isFinished && lastFinish > 0 ? `took ${duration(lastFinish - run.startedAt)}` : null,
-  ].filter((part): part is string => part !== null).join(' · ')
-  const segment = Math.max(1, Math.min(4, Math.floor((e.props.bodyColumns - 4 - (STAGES.length - 1)) / STAGES.length)))
-  const progress = card(els, 'progress', [
-    <Box key="progress:state" flexDirection="row" justifyContent="space-between" gap={1}>
-      <Text color={state.color} dimColor={state.color === undefined} weight="semibold" wrap="truncate-end">
-        {state.text}{state.aside ? <Text tabular weight="regular">{` · ${state.aside}`}</Text> : null}
-      </Text>
-      <Text tabular><Text weight="semibold">{doneCount}</Text><Text dimColor>/{STAGES.length} done</Text></Text>
-    </Box>,
-    <Text key="progress:bar">
-      {run.stages.map((stage, at) => {
-        const isCurrent = stage.id === state.currentId
-        const isQuiet = (stage.status === 'pending' && !isCurrent) || stage.status === 'skipped'
-        return (
-          <Text key={`bar:${stage.id}`} color={STATUS_COLOR[stage.status]} dimColor={isQuiet} weight={isCurrent ? 'bold' : 'regular'}>
-            {`${at > 0 ? ' ' : ''}${(isCurrent ? '█' : '━').repeat(segment)}`}
-          </Text>
-        )
-      })}
-    </Text>,
-    <Text key="progress:times" size="footnote" dimColor tabular>{times}</Text>,
-  ])
+  const stagesAside = [
+    `${doneCount}/${STAGES.length} done`,
+    run.startedAt !== undefined && isFinished && lastFinish > 0 ? `took ${duration(lastFinish - run.startedAt)}` : `updated ${duration(now - run.updatedAt)} ago`,
+  ].join(' · ')
 
   const stageRow = (stage: Stage, at: number) => {
-    const isCurrent = stage.id === state.currentId
+    const isCurrent = stage.id === currentId
     const isOpen = stage.id === open
     const isPending = stage.status === 'pending'
     const unmet = unmetCount(stage)
@@ -273,10 +246,9 @@ async function renderPane($: EngineInterface, e: PaneEvent, options: PipelineOpt
       {attentionStrip}
       {await prCard($, e, ctx)}
       {await threadsCard($, e, ctx)}
-      {progress}
       {card(els, 'stages', run.stages.map(stageRow), {
         title: 'Stages',
-        aside: <Text size="caption" dimColor>{open === null ? 'select for details' : 'select again to close'}</Text>,
+        aside: <Text size="caption" dimColor tabular>{stagesAside}</Text>,
         gap: 0,
       })}
       {await stageDetail($, e, ctx)}

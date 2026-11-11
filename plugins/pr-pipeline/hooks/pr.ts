@@ -112,13 +112,27 @@ async function resetStuckFetches($: EngineInterface, now: number): Promise<void>
   }))
 }
 
-async function closeMergedRuns($: EngineInterface, now: number): Promise<void> {
-  const due = Object.values(await read($, runs)).filter(
-    run => run.mergedAt !== undefined && run.closedAt === undefined && now - run.mergedAt >= CLOSE_AFTER_MS,
-  )
-  for (const run of due) {
+const DAY_MS = 86_400_000
+export const IDLE_NO_PR_MS = 3 * DAY_MS
+export const IDLE_WITH_PR_MS = 14 * DAY_MS
+
+/** Why an open run should close now, or null: merged 5 min ago, PR closed unmerged, or idle too long. */
+export function endReason(run: PipelineRun, now: number): string | null {
+  if (run.closedAt !== undefined) return null
+  if (run.mergedAt !== undefined) return now - run.mergedAt >= CLOSE_AFTER_MS ? 'closed' : null
+  if (run.pr?.state === 'CLOSED' && run.pr.fetchedAt >= run.updatedAt) return 'closed · PR closed without merge'
+  const idle = now - run.updatedAt
+  if (run.prUrl === undefined && idle >= IDLE_NO_PR_MS) return 'closed · no PR, idle 3 days'
+  if (idle >= IDLE_WITH_PR_MS) return 'closed · idle 14 days'
+  return null
+}
+
+async function closeEndedRuns($: EngineInterface, now: number): Promise<void> {
+  for (const run of Object.values(await read($, runs))) {
+    const reason = endReason(run, now)
+    if (reason === null) continue
     await closeRun($, run.key)
-    $.ui.toast(`Run ${run.ticket ?? run.branch} closed`)
+    $.ui.toast(`Run ${run.ticket ?? run.branch} ${reason}`)
   }
 }
 
@@ -129,7 +143,7 @@ const isPolled = (run: PipelineRun | undefined): run is PipelineRun =>
 export async function tick($: EngineInterface): Promise<void> {
   const now = await $.clock.now()
   await resetStuckFetches($, now)
-  await closeMergedRuns($, now)
+  await closeEndedRuns($, now)
   if ((await read($, replying)) !== null) return
   const all = await read($, runs)
   const key = pickedKey(all, await read($, selectedKey))

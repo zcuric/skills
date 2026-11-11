@@ -49,6 +49,9 @@ const openStage = atom({ plugin: 'pr-pipeline', key: 'openStage' } as const, nul
 const harnesses = atom({ plugin: 'pr-pipeline', key: 'harnesses' } as const, null as Harnesses | null)
 const repos = atom({ plugin: 'pr-pipeline', key: 'repos' } as const, {} as Record<string, RepoRef | null>)
 
+/** `owner/name#branch`, the form `status` and the pane use. */
+const RUN_KEY = /^([\w.-]+\/[\w.-]+)#(.+)$/
+
 export const runKey = (repoSlug: string | null, branch: string): string => `${repoSlug ?? 'unknown'}#${branch}`
 
 export const branchOfKey = (key: string): string => (key.includes('#') ? key.slice(key.indexOf('#') + 1) : key)
@@ -129,6 +132,11 @@ export async function resolveRun(
   const repo = input.repo !== undefined && input.repo !== '' ? { host: detected?.host ?? 'github.com', slug: input.repo } : detected
   if (input.branch !== undefined && all[input.branch] !== undefined && all[input.branch]?.key === input.branch && input.branch.includes('#')) {
     return { key: input.branch, repo, cwd }
+  }
+  const keyed = input.branch?.match(RUN_KEY)
+  if (keyed?.[1] !== undefined && keyed[2] !== undefined) {
+    const slug = keyed[1]
+    return { key: runKey(slug, keyed[2]), repo: { host: detected?.host ?? 'github.com', slug }, cwd }
   }
   const branch = input.branch ?? (await currentBranch($, cwd))
   if (branch === null) {

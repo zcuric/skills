@@ -15,7 +15,7 @@ Needs the GitHub CLI (`gh`) logged in. Jira and Linear tickets need their MCP co
 ## What you see
 
 - **Runs switcher** with the repo, branch and current stage of every run, then the run header with ticket, tracker and repo, and the confidence and merge-risk lights. A run follows its branch through `git checkout -b`, `git switch -c` and `git branch -m`.
-- **Progress card**: stages done, when the run started and last updated, and its total time once every stage has finished. A run with a stage running and no update for 30 minutes shows "Stalled at <stage>".
+- **Stages header**: stages done, and when the run last updated (its total time once every stage has finished). A run with a stage running and no update for 30 minutes shows "Stalled at <stage>" under Needs attention.
 - **Pull request card**: checks, review decision and reviewers, mergeability, and the Merge button once checks, review and risk allow it.
 - **Threads card**: unresolved review threads with their diff hunk, a reply box, Resolve, and Fix (hands the thread to the pipeline).
 - **Stage rows**: elapsed time, the attempt number when a stage ran again; open one for what the stage did, its warnings, the model that ran it, and for the acceptance stage every criterion with its evidence.
@@ -83,7 +83,7 @@ The skills follow the same rule: they read checks and threads through the pane's
 
 ## When the PR merges
 
-The run closes itself five minutes after the pane sees the PR merged and leaves the Runs switcher. Press Close to put a run away sooner, merged or not. With no open run, the pane shows the last closed one with a Reopen button.
+The run closes itself and leaves the Runs switcher: five minutes after the pane sees the PR merged, as soon as it sees the PR closed without merge, after 3 idle days without a PR, or after 14 idle days with one. Press Close to put a run away sooner, merged or not. With no open run, the pane shows the last closed one with a Reopen button.
 
 ## Reviewer backends
 

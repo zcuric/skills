@@ -181,7 +181,8 @@ export async function handleTool($: EngineInterface, input: PipelineToolInput, o
     const linkedPrUrl = PR_PAGE.test(link.href) ? repairedPrUrl(link.href) ?? link.href : undefined
     const linkedSlug = parsePrUrl(link.href)?.slug
     const run = await changeRun($, key, existing => {
-      const isAdopted = linkedPrUrl !== undefined && (existing.prUrl === undefined || (stageId === 'pr' && linkedSlug === existing.repo))
+      const isRunRepo = existing.repo === undefined || linkedSlug?.toLowerCase() === existing.repo.toLowerCase()
+      const isAdopted = linkedPrUrl !== undefined && isRunRepo && (existing.prUrl === undefined || stageId === 'pr')
       return withStage({ ...existing, prUrl: isAdopted ? linkedPrUrl : existing.prUrl }, stageId, stage => withLink(stage, link))
     })
     await update($, selectedKey, () => key)
@@ -341,8 +342,8 @@ export const TOOL_DESCRIPTION =
   '"confidence" is a percentage 0-100 (92, not 0.92); ' +
   '"backend", "model" and "effort" record who ran the stage; ' +
   '"tier" at triage and "risk" low|medium|high at the merge-risk stage are kept on the run. ' +
-  'action "link" attaches a labelled URL to a stage; a PR page URL becomes the run\'s PR when the run has none, ' +
-  'or when linked to the pr stage from the run\'s repo. action "unlink" (stage, href) removes a link; unlinking the run\'s PR clears it. ' +
+  'action "link" attaches a labelled URL to a stage; a PR page URL from the run\'s repo becomes the run\'s PR when the run has none, ' +
+  'or when linked to the pr stage. action "unlink" (stage, href) removes a link; unlinking the run\'s PR clears it. ' +
   'action "pr" returns the live PR (checks, reviews, threads) as JSON; "fresh" skips the 15 s cache. ' +
   'action "pr-reply" (threadId, body) replies to a review thread; "pr-resolve" (threadId) resolves one. ' +
   'action "settings" returns the review settings and detected tools; "set" writes settings. ' +

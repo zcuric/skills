@@ -317,3 +317,69 @@ test('with no open run the pane offers to reopen the last closed one', async ($,
   expect(await ui.find({ key: 'stage:enhance' })).toBeDefined()
   await ui.unmount()
 })
+
+test('a PR closed without merge closes its run', async ($, on) => {
+  const { clock, toasts } = boot(on, prRoutes({ view: prView({ state: 'CLOSED' }), threads: [] }))
+  mock.store(on)
+  await $.session.start(START)
+  await $.tool.call({ tool: TOOL, action: 'start', branch: 'feature/dropped', ticket: 'HWEPD-31', prUrl: PR_URL })
+  await clock.advance(61_000)
+  expect(toasts).toContain('Run HWEPD-31 closed · PR closed without merge')
+  expect((await status($, 'feature/dropped')).closedAt).toBeDefined()
+})
+
+test('an idle run closes: 3 days without a PR, 14 days with one', async ($, on) => {
+  const day = 86_400_000
+  const now = 30 * day
+  const { clock, toasts } = boot(on, prRoutes({ view: prView(), threads: [] }), { now })
+  const stored = (key: string, updatedAt: number, prUrl?: string) => ({ key: `o/r#${key}`, branch: key, repo: 'o/r', ticket: key, updatedAt, prUrl, stages: [] })
+  mock.store(on, {
+    runs: {
+      'o/r#no-pr-old': stored('no-pr-old', now - 3 * day),
+      'o/r#no-pr-new': stored('no-pr-new', now - 2 * day),
+      'o/r#pr-old': stored('pr-old', now - 14 * day, 'https://github.com/o/r/pull/43'),
+      'o/r#pr-new': stored('pr-new', now - 13 * day, PR_URL),
+    },
+  })
+  await $.session.start(START)
+  await clock.advance(60_000)
+  expect(toasts).toEqual(expect.arrayContaining(['Run no-pr-old closed · no PR, idle 3 days', 'Run pr-old closed · idle 14 days']))
+  expect((await status($, 'no-pr-new')).closedAt).toBeUndefined()
+  expect((await status($, 'pr-new')).closedAt).toBeUndefined()
+})
+
+test('a run key passed as branch is not wrapped in the current repo', async ($, on) => {
+  boot(on)
+  mock.store(on)
+  await $.session.start(START)
+  await $.tool.call({ tool: TOOL, action: 'start', branch: 'x/contracts#feature/shape', ticket: 'HWEPD-32' })
+  const run = await status($, 'x/contracts#feature/shape')
+  expect(run.key).toBe('x/contracts#feature/shape')
+  expect(run.repo).toBe('x/contracts')
+  expect(run.branch).toBe('feature/shape')
+})
+
+test('a linked PR from another repo is not adopted as the run PR', async ($, on) => {
+  boot(on)
+  mock.store(on)
+  await $.session.start(START)
+  await $.tool.call({ tool: TOOL, action: 'start', branch: 'feature/linked', ticket: 'HWEPD-33' })
+  await $.tool.call({ tool: TOOL, action: 'link', branch: 'feature/linked', stage: 'implement', label: 'Contracts PR', href: 'https://github.com/x/contracts/pull/22' })
+  expect((await status($, 'feature/linked')).prUrl).toBeUndefined()
+  await $.tool.call({ tool: TOOL, action: 'link', branch: 'feature/linked', stage: 'pr', label: 'PR', href: 'https://github.com/O/R/pull/7' })
+  expect((await status($, 'feature/linked')).prUrl).toBe('https://github.com/O/R/pull/7')
+})
+
+test('the pane has no progress card; the Stages header carries the count', async ($, on) => {
+  boot(on)
+  mock.store(on)
+  await $.session.start(START)
+  await $.tool.call({ tool: TOOL, action: 'start', branch: 'feature/count', ticket: 'HWEPD-34' })
+  await $.tool.call({ tool: TOOL, action: 'stage', branch: 'feature/count', stage: 'enhance', status: 'done' })
+  await $.tool.call({ tool: TOOL, action: 'stage', branch: 'feature/count', stage: 'implement', status: 'running' })
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(await ui.find({ type: 'Text', text: /Running: Implement/ })).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: /^1\/9 done · updated/ })).toBeDefined()
+  await ui.unmount()
+})
