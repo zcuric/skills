@@ -48,7 +48,7 @@ At the start it asks you one question, at most, covering only what it cannot dec
 | 1 | Enhance | Reads the ticket, writes the acceptance criteria and a spec, posts the spec on the ticket, classifies the task and picks models; asks you to confirm the spec when the work is risky or the criteria had to be derived |
 | 2 | Implement | Branches, reproduces a bug with a failing test first, implements, lints, tests, commits |
 | 3 | Create PR | Opens the PR with a skimmable body (link line, status strip, summary, one diagram, test plan) and labels |
-| 4 | AI review | Posts one review: a one-line verdict and a line comment per confirmed defect; swaps the AI label. Starts together with stage 6 |
+| 4 | AI review | Posts one review: the verdict, a 1–5 score and the reviewer's confidence on top, a short conclusion, a findings table sorted by severity, and a line comment per confirmed defect; swaps the AI label. Starts together with stage 6 |
 | 5 | Address | Fixes findings, replies in each thread with the commit, resolves it; a finding it turns down is resolved with the reason and flagged |
 | 6 | E2E verify | A quick check first (see below); then drives the real app in the background while stage 4 reviews: the repo's e2e skill, else a browser smoke from `.claude/launch.json`, else skipped with the reason. Defects it finds are fixed and driven again after stage 5 |
 | 7 | Acceptance | First a delta review of any commits since the AI review (changes requested there stops the run); then a separate read-only agent checks every criterion against the evidence (test, screenshot, log line) and its verdicts are recorded as they stand; a gap loops back to stage 2 once |
@@ -100,7 +100,8 @@ What stage 4 does to keep its comments few and worth reading:
 - It reviews the diff against the repo, not on its own. It opens the callers and callees of what changed, and holds the change against the ticket's criteria and the claims in the PR description. For a bug fix it checks that the cause is gone, not only the symptom.
 - Every finding is checked against the code before it is posted. For sensitive, architecture and business-logic work a separate verifier does the check, and a finding is dropped only when the verifier quotes the line that refutes it.
 - Only defects are posted: wrong behaviour, data exposure or loss, a broken contract, a test that cannot fail. Each is one line comment that opens with the consequence. Style, naming and "consider" are never posted.
-- A defect that repeats is one thread with an `Also at` line, so the whole class is fixed in one round. A defect the PR did not write is marked `[pre-existing]` and never moves the verdict.
+- A defect that repeats is one thread with an `Also at` line, so the whole class is fixed in one round. A defect the PR did not write is marked `pre-existing` and never moves the verdict or the score.
+- The review body reads at a glance: `**AI review: changes requested** · 🔴 **2/5** significant bugs · confidence 🟢 **86%**`, a one- or two-sentence conclusion, then one table row per line comment (severity, linked title, `path:line`, confidence). The score is computed from what survived verification, not taken from the reviewer. A clean review says what it checked instead of the table. Each line comment opens with its severity and confidence: `🔴 **[high · 92%] …**`.
 - Later rounds review only the commits since the last review and do not repeat what was already posted. The third review of a PR is the last: the run stops and asks for a person, because further rounds mostly turn up older bugs in the same code.
 - Every thread ends fixed, or resolved with a one-sentence reason. None is left open for you to chase.
 - It never approves. The verdict is a comment and a label; people approve.

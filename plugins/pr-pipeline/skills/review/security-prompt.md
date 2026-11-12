@@ -14,4 +14,4 @@ Check the diff for:
 
 Severity: high when an attacker or an ordinary user can exploit it or data is lost; medium when it needs an unlikely precondition; low for hardening.
 
-Answer with JSON only, in the same contract as the first pass. `verdict` is `changes_requested` when any finding is high; `acceptance` may be an empty array; `description_confidence` is your confidence that the PR body describes the security-relevant behaviour truthfully.
+Answer with JSON only, in the same contract as the first pass. `verdict` is `changes_requested` when any finding is high; `acceptance` and `checked` may be empty arrays and `summary` an empty string; `confidence` is ignored; `description_confidence` is your confidence that the PR body describes the security-relevant behaviour truthfully.

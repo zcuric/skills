@@ -133,7 +133,7 @@ test('the header shows the run confidence, the merge-risk badge and what needs a
     await ui.unmount()
   }
 
-  await $.tool.call({ tool: TOOL, action: 'stage', branch: 'feature/hwepd-4', stage: 'review', status: 'done', summary: 'changes requested', confidence: 72, flag: 'Missing test for the 404 path' })
+  await $.tool.call({ tool: TOOL, action: 'stage', branch: 'feature/hwepd-4', stage: 'review', status: 'done', summary: 'changes requested · 2/5 · 1 high', confidence: 72, flag: 'Missing test for the 404 path' })
   await $.tool.call({ tool: TOOL, action: 'stage', branch: 'feature/hwepd-4', stage: 'risk', status: 'done', summary: 'one migration', risk: 'medium' })
 
   for (const surface of ['terminal', 'desktop'] as const) {
@@ -151,6 +151,23 @@ test('the header shows the run confidence, the merge-risk badge and what needs a
   }
 })
 
+test('a scored review summary raises changes requested only for that verdict', async ($, on) => {
+  boot(on)
+  mock.store(on)
+  await $.session.start(START)
+  await $.tool.call({ tool: TOOL, action: 'start', branch: 'b', ticket: 'HWEPD-41' })
+  await $.tool.call({ tool: TOOL, action: 'stage', branch: 'b', stage: 'review', status: 'done', summary: 'lgtm · 4/5 · 3 findings · held 1', confidence: 86 })
+  let ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(await ui.find({ key: 'attn:review' })).toBeUndefined()
+  await ui.unmount()
+
+  await $.tool.call({ tool: TOOL, action: 'stage', branch: 'b', stage: 'review', status: 'running' })
+  await $.tool.call({ tool: TOOL, action: 'stage', branch: 'b', stage: 'review', status: 'done', summary: 'changes requested · 3/5 · 2 findings', confidence: 70 })
+  ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect((await ui.find({ key: 'attn:review' }))?.text).toMatch(/changes requested/)
+  await ui.unmount()
+})
+
 test('re-running a stage starts a new attempt, keeps its history and judges only the latest outcome', async ($, on) => {
   const { clock } = boot(on)
   mock.store(on)
@@ -158,7 +175,7 @@ test('re-running a stage starts a new attempt, keeps its history and judges only
   await $.tool.call({ tool: TOOL, action: 'start', branch: 'b', ticket: 'HWEPD-40' })
   await $.tool.call({ tool: TOOL, action: 'stage', branch: 'b', stage: 'review', status: 'running' })
   await clock.advance(60_000)
-  await $.tool.call({ tool: TOOL, action: 'stage', branch: 'b', stage: 'review', status: 'done', summary: 'changes requested · 2 high', confidence: 60, flag: 'Unverified finding dropped', note: 'Second pass needed' })
+  await $.tool.call({ tool: TOOL, action: 'stage', branch: 'b', stage: 'review', status: 'done', summary: 'changes requested · 1/5 · 2 high', confidence: 60, flag: 'Unverified finding dropped', note: 'Second pass needed' })
   await clock.advance(60_000)
   await $.tool.call({ tool: TOOL, action: 'stage', branch: 'b', stage: 'review', status: 'running' })
 
@@ -172,7 +189,7 @@ test('re-running a stage starts a new attempt, keeps its history and judges only
   expect(rerun.notes).toEqual(['Second pass needed'])
 
   await clock.advance(30_000)
-  await $.tool.call({ tool: TOOL, action: 'stage', branch: 'b', stage: 'review', status: 'done', summary: 'lgtm · 0 findings', confidence: 90 })
+  await $.tool.call({ tool: TOOL, action: 'stage', branch: 'b', stage: 'review', status: 'done', summary: 'lgtm · 5/5 · no findings', confidence: 90 })
   await clock.advance(30_000)
   await $.tool.call({ tool: TOOL, action: 'stage', branch: 'b', stage: 'review', did: 'Swapped the AI label' })
   expect((await stageOf($, 'b', 'review')).finishedAt).toBe(1_150_000)

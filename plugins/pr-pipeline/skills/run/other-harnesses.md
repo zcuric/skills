@@ -16,7 +16,7 @@ run: acme/orders#fix/abc-123-past-due-date · tracker jira · tier S · started 
 - note: Class: quick-fix · cost cheap · one validator, one test
 - link: Pipeline spec https://…
 
-## 4 review · done · lgtm · 2 findings · head 3f9c2ab
+## 4 review · done · lgtm · 4/5 · 2 findings · head 3f9c2ab
 - ran: codex · gpt-5-codex · high
 - did: src/orders/total.ts:42 · medium · null customer
 - flag: Review fell back to …

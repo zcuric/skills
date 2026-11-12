@@ -24,6 +24,9 @@ Answer with JSON only, no prose around it:
 ```json
 {
   "verdict": "lgtm" | "changes_requested",
+  "confidence": 0-100,
+  "summary": "one or two sentences: what the change does and what is wrong with it, or that it does what the ticket asks",
+  "checked": ["what you opened, in a few words each: the null-address path in ExportService::row()", "both callers"],
   "description_confidence": 0-100,
   "description_note": "one sentence on whether the PR body matches the diff",
   "acceptance": [{ "criterion": "...", "met": true | false | "partial", "evidence": "file:line or test name" }],
@@ -44,3 +47,5 @@ Answer with JSON only, no prose around it:
 ```
 
 `line` is a line of the new file that the diff touches. `verdict` is `changes_requested` when any finding has severity high, or two or more have severity medium with confidence 70 or more; otherwise `lgtm`. Findings with `pre_existing: true` are left out of that count.
+
+`confidence` is how sure you are of the verdict as a whole: lower it for callers you could not trace, behaviour only the running app would show, or a diff too large to read in full. `summary` is plain words with no praise. `checked` names what you actually read, not what the diff contains.

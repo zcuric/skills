@@ -1,11 +1,11 @@
 ---
 name: review
-description: Review an open PR with an AI reviewer (claude by default; codex, opencode or any other agent CLI when chosen) and post one GitHub review with a one-line verdict and a line comment per confirmed defect, then swap the ai review label. Use for "AI review this PR", "post an AI review on PR n", or as stage 4 of the PR pipeline.
+description: Review an open PR with an AI reviewer (claude by default; codex, opencode or any other agent CLI when chosen) and post one GitHub review with the verdict, a 1–5 score and the confidence on top, a findings table and a line comment per confirmed defect, then swap the ai review label. Use for "AI review this PR", "post an AI review on PR n", or as stage 4 of the PR pipeline.
 ---
 
 # AI PR review
 
-One GitHub review per run: a one- or two-line body plus one comment per finding, pinned to the exact line. The author cannot approve their own PR, so the verdict is a `COMMENT` review and a label, never `APPROVE`; people approve.
+One GitHub review per run: a short body that leads with the verdict, a score and the confidence, plus one comment per finding, pinned to the exact line. The author cannot approve their own PR, so the verdict is a `COMMENT` review and a label, never `APPROVE`; people approve.
 
 The `mcp__pr-pipeline__pipeline` tool is deferred: when it is not loaded, load it first with ToolSearch `select:mcp__pr-pipeline__pipeline`. In a harness that has no such tool (Codex, OpenCode, any other agent), read `other-harnesses.md` in the run skill's directory (`../run/` from this one) first: it maps every tool call below to a file and a `gh` command.
 
@@ -41,7 +41,7 @@ Write `<criteriaDir>/review-prompt.md`, the one input every backend reads:
 
 ## Backends
 
-Every backend answers with the same JSON: the contract in `agents/reviewer.md` (`verdict`, `description_confidence`, `description_note`, `acceptance[]`, `findings[]` with `also_at` and `pre_existing`).
+Every backend answers with the same JSON: the contract in `agents/reviewer.md` (`verdict`, `confidence`, `summary`, `checked[]`, `description_confidence`, `description_note`, `acceptance[]`, `findings[]` with `also_at` and `pre_existing`).
 
 | Backend | How it runs | Models | Effort |
 | --- | --- | --- | --- |
@@ -92,13 +92,13 @@ Post a line comment only when all of these hold:
 - It is the only thread for its root cause. A security-pass duplicate merges into it silently, and the other places of a repeated defect go on its `Also at` line, never in threads of their own.
 - It was not posted in an earlier round. A finding still open from before is left to its existing thread.
 
-A `pre_existing` finding that passes these is posted with `[pre-existing]` in place of the severity, so it does not read as the author's mistake, and never moves the verdict. One whose line is outside the diff cannot take a line comment: it becomes a `Pre-existing:` line in the body, three at most.
+A `pre_existing` finding that passes these is posted with `pre-existing` in place of the severity, so it does not read as the author's mistake, and never moves the verdict or the score. One whose line is outside the diff cannot take a line comment: it becomes a `Pre-existing:` line in the body, three at most.
 
 Verified defects under 60 are not dropped: write them to `<criteriaDir>/review-held.json` in the `findings` shape, and stage 5 fixes them without a thread. Standalone, name them in the closing message.
 
 ## Post
 
-Write `<criteriaDir>/review.json`:
+Write `<criteriaDir>/review.json`, with the title cells of the findings table unlinked:
 
 ```json
 {
@@ -114,32 +114,67 @@ Write `<criteriaDir>/review.json`:
 gh api repos/{owner}/{repo}/pulls/<n>/reviews --input <criteriaDir>/review.json
 ```
 
+The comment URLs exist only after posting, so link the table in a second step: read each comment's `html_url` with `gh api repos/{owner}/{repo}/pulls/<n>/reviews/<review_id>/comments`, match it to its row by `path` and `line`, write `{ "body": "<linked body>" }` to `<criteriaDir>/review-body.json`, and `gh api -X PUT repos/{owner}/{repo}/pulls/<n>/reviews/<review_id> --input <criteriaDir>/review-body.json`. When the update fails, the unlinked table stays; no flag.
+
 ### Line comment
 
 ````markdown
-**[high] Archived clients still get the unmasked files**
+🔴 **[high · 92%] Archived clients still get the unmasked files**
 
 If the client is archived between submit and the job, both files with full SSNs reach their portal: the upload's archive check reads the relation the sheet loaded `withInactive()`.
 
 Check the taxpayer is active with a fresh query before building either file.
 ````
 
-Line 1 is the severity in brackets plus the consequence a user or operator would see, not the mechanism. Then at most two sentences on when it happens and why, naming one or two identifiers. Then the fix in one sentence, or a `suggestion` block when the reviewer gave replacement code that compiles in place. A repeated defect ends with `Also at `path:line`, `path:line`.` 80 words at most outside the suggestion and that line. No badges, no confidence number, no provenance tags ("security pass agrees"), no praise, no restating what the line does.
+Line 1 is the severity emoji (🔴 high, 🟠 medium, 🟡 low, ⚪ pre-existing), then in bold the severity and the confidence after your check in brackets, plus the consequence a user or operator would see, not the mechanism; a pre-existing one reads `⚪ **[pre-existing · 80%] …**`. Then at most two sentences on when it happens and why, naming one or two identifiers. Then the fix in one sentence, or a `suggestion` block when the reviewer gave replacement code that compiles in place. A repeated defect ends with `Also at `path:line`, `path:line`.` 80 words at most outside the suggestion and that line. No image badges, no provenance tags ("security pass agrees"), no praise, no restating what the line does.
 
 ### Body
 
 ````markdown
-**AI review: changes requested** · 1 high, 2 medium
+**AI review: changes requested** · 🔴 **2/5** significant bugs · confidence 🟢 **86%**
+
+Archived clients can still receive the unmasked files, and the retry path sends the email twice. The export itself does what the ticket asks.
+
+| | Finding | Where | Confidence |
+| --- | --- | --- | --- |
+| 🔴 high | [Archived clients still get the unmasked files](https://github.com/acme/orders/pull/12#discussion_r101) | `app/Jobs/SendFiles.php:42` | 92% |
+| 🟠 medium | [Retry sends the email twice](https://github.com/acme/orders/pull/12#discussion_r102) | `app/Jobs/SendFiles.php:77` | 75% |
+
+Criteria: 3 of 4 met. Not met: "Address columns are blank".
 Description: the body says guests get the discount; the diff skips them.
 Question: Should an archived client still see files shared before the archive?
 Pre-existing: `app/Jobs/SendFiles.php:41` retries without a limit.
 ````
 
-- Line 1 is the verdict and the posted findings counted by severity; in delta mode it reads `**AI review (since abc1234): lgtm** · …` with the short SHA. With no findings and a truthful description the whole body is `**AI review: lgtm** · no findings`.
+A clean review:
+
+````markdown
+**AI review: lgtm** · 🟢 **5/5** ready to merge · confidence 🟢 **90%**
+
+The export now leaves the address columns empty for accounts without a billing address, and the new test fails without the fix.
+
+Checked: the null-address path in `ExportService::row()`, both callers, the new test.
+````
+
+- Line 1 starts `**AI review: <verdict>**` (the round cap counts reviews by that prefix; in delta mode it reads `**AI review (since abc1234): lgtm** · …` with the short SHA), then the score with its light and label, then `confidence` with its light and the number.
+- **Score**, computed here after verification from what is posted and held, never taken from the reviewer. Pre-existing findings never move it; a criterion the reviewer marked `false` caps it at 3.
+
+  | Score | When | Label | Light |
+  | --- | --- | --- | --- |
+  | 5 | `lgtm`, nothing posted or held in `review-held.json`, `description_confidence` 80 or more, no criterion `false` | ready to merge | 🟢 |
+  | 4 | any other `lgtm` | minor fixes | 🟢 |
+  | 3 | `changes_requested` with no high | fix before merge | 🟡 |
+  | 2 | one high | significant bugs | 🔴 |
+  | 1 | two or more high | needs rework | 🔴 |
+
+- **Confidence** is the reviewer's `confidence`: 🟢 at 80 or more, 🟡 60–79, 🔴 under 60. When the answer has none (an older custom command), leave the segment off rather than invent one. The security pass's `confidence` is ignored.
+- The conclusion paragraph is the reviewer's `summary`: what the change does and what is wrong with it, in plain words. Rewrite it when verification dropped the finding it names.
+- The findings table has one row per posted line comment, sorted high, medium, low, pre-existing: the severity with its emoji, the title linked to its line comment, `path:line`, the confidence after your check. Omit it when nothing was posted.
+- `Checked:` only when nothing was posted: the reviewer's `checked`, joined with commas, so a reader sees what a clean pass rests on.
+- `Criteria:` only when the reviewer marked a criterion `false` or `partial`: `n of m met`, then the unmet and partial ones quoted.
 - `Description:` only when `description_confidence` is under 80: what the body says against what the diff does, in one sentence.
-- `Question:` one line per open question the ticket, the criteria and the PR body do not answer.
-- `Pre-existing:` one line per pre-existing defect outside the diff: `path:line` and the consequence. They are not counted on line 1; pre-existing line comments are, as `1 pre-existing`.
-- Nothing else: no badges, no tables, no reviewer or model name, no footer. The reviewer's `acceptance` verdicts are not posted; stage 7 records the criteria and the proof shows them.
+- `Question:` one line per open question the ticket, the criteria and the PR body do not answer; `Pre-existing:` one line per pre-existing defect outside the diff, `path:line` and the consequence.
+- Nothing else: no image badges, no reviewer or model name, no footer, no praise. Stage 7 stays the record of the criteria; the `Criteria:` line only warns early.
 
 #### How the change runs
 
@@ -174,4 +209,4 @@ Swap the labels from the profile map; a `null` key is skipped:
 gh pr edit <n> --remove-label "<labels.aiChangesRequested>" --add-label "<labels.aiLgtm>"   # or the reverse
 ```
 
-Record with `mcp__pr-pipeline__pipeline` on stage `review`: the `running` call carries `backend`, `model` and `effort`; the closing call has status `done`, summary `lgtm · 3 findings` or `changes requested · 1 high` (keep the literal phrase `changes requested`; the pane keys on it), ending `· held n` when findings went to `review-held.json` (`lgtm · 2 findings · held 1`), confidence = `description_confidence`, one `did` per posted finding (`src/orders/total.ts:42 · high · null customer`; a pre-existing one reads `· pre-existing ·`), a `note` per reviewer acceptance verdict that is `false` or `partial` and per finding held for stage 5, a `flag` per finding dropped as unverifiable (on the verifier's `not_real`, with its refuting line) and per fallback, and a `link` to the review URL the API returned (`html_url`). End with `{ action: "pr" }` so the pane's Threads card shows the new comments. Standalone with no pipeline run for the branch, skip recording: the tool refuses stage calls without a run.
+Record with `mcp__pr-pipeline__pipeline` on stage `review`: the `running` call carries `backend`, `model` and `effort`; the closing call has status `done`, summary the verdict, the score and the findings: `lgtm · 5/5 · no findings`, `lgtm · 4/5 · 3 findings` or `changes requested · 2/5 · 1 high` (keep the literal phrase `changes requested`; the pane keys on it), ending `· held n` when findings went to `review-held.json` (`lgtm · 4/5 · 2 findings · held 1`), confidence = the reviewer's `confidence` (its `description_confidence` when absent), one `did` per posted finding (`src/orders/total.ts:42 · high · null customer`; a pre-existing one reads `· pre-existing ·`), a `note` per reviewer acceptance verdict that is `false` or `partial` and per finding held for stage 5, a `flag` per finding dropped as unverifiable (on the verifier's `not_real`, with its refuting line) and per fallback, and a `link` to the review URL the API returned (`html_url`). End with `{ action: "pr" }` so the pane's Threads card shows the new comments. Standalone with no pipeline run for the branch, skip recording: the tool refuses stage calls without a run.
