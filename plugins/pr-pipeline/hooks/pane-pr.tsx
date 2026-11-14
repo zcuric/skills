@@ -32,6 +32,7 @@ import {
   modelChip,
   modelFull,
   runConfidence,
+  writeConfig,
 } from './runs'
 import { bar, chip, confidenceTone, diffBlocks, gauge, INK, isGraphic, RISK_TONE, STATUS_TONE, tint } from './look'
 import type { Tone } from './look'
@@ -399,7 +400,8 @@ export async function threadsCard($: EngineInterface, e: PaneEvent, ctx: PaneCon
 export async function writeSetting($: EngineInterface, live: PipelineOptions, field: keyof PipelineOptions, value: string): Promise<void> {
   const at = await $.clock.now()
   await update($, settingsPending, all => ({ ...all, [field]: { value, from: String(live[field]), at } }))
-  const written = await $.config.set({ key: `pr-pipeline.${field}`, value }).catch((err: unknown) => ({ deny: String(err) }))
+  const written = await writeConfig($, field, value)
+  if (written.stored === true) await update($, settingsPending, ({ [field]: _stored, ...rest }) => rest)
   if (written.deny === undefined) return
   await update($, settingsPending, ({ [field]: _refused, ...rest }) => rest)
   await $.ui.toast(`Setting ${field} refused: ${written.deny}`)

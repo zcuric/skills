@@ -363,6 +363,43 @@ export const pipelineOptions = (raw: PluginOptions | Partial<PipelineOptions>): 
   merge_method: pickOption(raw.merge_method, MERGE_METHODS, 'squash'),
 })
 
+const SETTINGS_STORE_KEY = 'settings'
+
+type StoredSettings = Partial<Record<keyof PipelineOptions, string>>
+
+async function storedSettings($: EngineInterface): Promise<StoredSettings> {
+  const value = await $.store.get(SETTINGS_STORE_KEY).catch(() => undefined)
+  return typeof value === 'object' && value !== null ? (value as StoredSettings) : {}
+}
+
+/** The options in force: picks kept in the store (where `/config` has no row for the plugin) over `userConfig`. */
+export async function liveOptions($: EngineInterface, base: PipelineOptions): Promise<PipelineOptions> {
+  return pipelineOptions({ ...base, ...(await storedSettings($)) })
+}
+
+/** The /config row of one setting; a plugin loaded from a skills folder may have none. */
+async function settingRowKey($: EngineInterface, field: keyof PipelineOptions): Promise<string | null> {
+  const rows = await $.config.list().catch(() => [])
+  const row = rows.find(one => one.key === `pr-pipeline.${field}`)
+    ?? rows.find(one => one.key.startsWith('pr-pipeline@') && one.key.endsWith(`.${field}`))
+  return row?.key ?? null
+}
+
+/** Writes one setting through `/config`, else into the store; `{ deny }` when refused, never a throw. */
+export async function writeConfig($: EngineInterface, field: keyof PipelineOptions, value: string): Promise<{ deny?: string; stored?: true }> {
+  const key = await settingRowKey($, field)
+  const stored = await storedSettings($)
+  const { [field]: _replaced, ...others } = stored
+  if (key === null) {
+    await $.store.set(SETTINGS_STORE_KEY, { ...others, [field]: value })
+    return { stored: true }
+  }
+  const written = await $.config.set({ key, value }).catch((err: unknown) => ({ deny: err instanceof Error ? err.message : String(err) }))
+  if (written.deny !== undefined) return { deny: written.deny }
+  if (field in stored) await $.store.set(SETTINGS_STORE_KEY, others)
+  return {}
+}
+
 /** `claude-opus-5-5` → `opus`, so one run never mixes full ids and family names. */
 export const shortModel = (model: string): string =>
   CLAUDE_MODELS.find(family => model.toLowerCase().includes(family)) ?? model

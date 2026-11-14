@@ -23,7 +23,7 @@ import { prRefOf, refreshPr, schedulePrRefresh } from './pr'
 import { resolveProfile } from './profile'
 import {
   BACKENDS, CLAUDE_MODELS, EFFORTS, STAGES, TRACKERS, changeRun, closeRun, ensureHarnesses, followStoreOnce, freshRun, isOpenRun,
-  isStageId, pipelineOptions, rekeyRun, repoFor, resolveRun, runKey, shortModel, stageLabel,
+  isStageId, pipelineOptions, rekeyRun, repoFor, resolveRun, runKey, shortModel, stageLabel, writeConfig,
 } from './runs'
 import type { ResolvedRun } from './runs'
 
@@ -122,13 +122,19 @@ async function settingsAnswer($: EngineInterface, input: PipelineToolInput, opti
   const refusal = settingsRefusal(set, options)
   if (refusal !== null) return deny(refusal)
   const applied: Record<string, string> = {}
+  const refused: Record<string, string> = {}
   for (const [field, value] of Object.entries(set)) {
-    if (!isValidSetting(field, value, options)) continue
-    const written = await $.config.set({ key: `pr-pipeline.${field}`, value: String(value) })
+    if (!isValidSetting(field, value, options)) {
+      refused[field] = 'not a valid value'
+      continue
+    }
+    const written = await writeConfig($, field as keyof PipelineOptions, String(value))
     if (written.deny === undefined) applied[field] = String(value)
+    if (written.deny !== undefined) refused[field] = written.deny
   }
   const found = await ensureHarnesses($)
-  return { result: JSON.stringify({ ...options, ...applied, harnesses: found, claudeModels: CLAUDE_MODELS, efforts: EFFORTS }) }
+  const report = Object.keys(refused).length > 0 ? { refused } : {}
+  return { result: JSON.stringify({ ...options, ...applied, ...report, harnesses: found, claudeModels: CLAUDE_MODELS, efforts: EFFORTS }) }
 }
 
 /** The commit a verdict judged: the given sha, else the PR head on GitHub, else HEAD of the run's checkout; null when unknown. */

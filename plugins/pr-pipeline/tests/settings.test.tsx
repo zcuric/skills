@@ -32,6 +32,40 @@ test('settings writes valid fields to config and skips invalid ones', async ($, 
   const settings = JSON.parse(String(answer.result))
   expect(settings.reviewer).toBe('codex')
   expect(settings.merge_method).toBe('squash')
+  expect(settings.refused).toEqual({ merge_method: 'not a valid value' })
+})
+
+test('settings writes to the row a skills-dir load is keyed by', async ($, on) => {
+  const { configs } = boot(on, [], { configPrefix: 'pr-pipeline@skills-dir' })
+  mock.store(on)
+  await $.session.start(START)
+  const answer = await $.tool.call({ tool: TOOL, action: 'settings', set: { review_model: 'sonnet' } })
+  expect(configs).toEqual([{ key: 'pr-pipeline@skills-dir.review_model', value: 'sonnet' }])
+  expect(JSON.parse(String(answer.result)).review_model).toBe('sonnet')
+})
+
+test('with no /config row the setting is kept in the store and used from then on', async ($, on) => {
+  const { configs } = boot(on, [], { configPrefix: null })
+  mock.store(on)
+  await $.session.start(START)
+  const answer = await $.tool.call({ tool: TOOL, action: 'settings', set: { review_model: 'sonnet' } })
+  expect(configs).toEqual([])
+  expect(JSON.parse(String(answer.result)).review_model).toBe('sonnet')
+  const again = JSON.parse(String((await $.tool.call({ tool: TOOL, action: 'settings' })).result))
+  expect(again.review_model).toBe('sonnet')
+})
+
+test('with no /config row a pressed model pill stays lit', async ($, on) => {
+  boot(on, [], { configPrefix: null })
+  mock.store(on)
+  await $.session.start(START)
+  await $.tool.call({ tool: TOOL, action: 'start', branch: 'feature/settings' })
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await ui.press({ key: 'settings:toggle' })
+  await ui.press({ key: 'set:model:sonnet' })
+  expect(await isLit(ui, 'set:model:sonnet')).toBe(true)
+  expect(await isLit(ui, 'set:model:opus')).toBe(false)
+  await ui.unmount()
 })
 
 test('a stage records who ran it and the row shows the chip', async ($, on) => {

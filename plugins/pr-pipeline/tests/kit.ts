@@ -50,7 +50,7 @@ export type Booted = {
   tools: Array<{ name: string; isDeferred?: boolean }>
 }
 
-export function boot(on: On, routes: readonly Route[] = [], options: { now?: number; cwd?: string; configDeny?: string } = {}): Booted {
+export function boot(on: On, routes: readonly Route[] = [], options: { now?: number; cwd?: string; configDeny?: string; configPrefix?: string | null } = {}): Booted {
   const clock = mock.clock(on, { now: options.now ?? 1_000_000 })
   mock.env(on, { PATH: '/usr/bin', HOME: '/home/dev' })
   const prompts: string[] = []
@@ -81,6 +81,16 @@ export function boot(on: On, routes: readonly Route[] = [], options: { now?: num
   on('prompt.submit', (_$, e) => {
     prompts.push(e.text)
     return { text: e.text }
+  })
+  on('config.list', () => {
+    const prefix = options.configPrefix === undefined ? 'pr-pipeline' : options.configPrefix
+    if (prefix === null) return { value: [] }
+    const fields = ['reviewer', 'review_model', 'review_command', 'review_effort', 'tracker', 'merge_method']
+    return {
+      value: fields.map(field => ({
+        key: `${prefix}.${field}`, label: field, kind: 'text' as const, value: '', provider: { plugin: prefix, tier: 'user' as const }, isLocked: false,
+      })),
+    }
   })
   on('config.set', (_$, e) => {
     if (options.configDeny !== undefined) return { deny: options.configDeny }

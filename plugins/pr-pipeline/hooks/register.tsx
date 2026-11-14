@@ -9,7 +9,7 @@ import type { PaneContext, PaneEvent } from './pane-pr'
 import { deltaReviewPrompt, failingRunIds, fixCiPrompt, heldKey, isPollDue, prRefOf, refreshPr, staleVerdictText, syncPrompt, tick } from './pr'
 import {
   STAGES, closeRun, ensureHarnesses, followStoreOnce, isOpenRun, loadRuns, modelChip, openRunsInRepo, pickedKey, pipelineOptions,
-  reopenRun, repoFor, runConfidence, stageLabel,
+  liveOptions, reopenRun, repoFor, runConfidence, stageLabel,
 } from './runs'
 import { ARGUMENT_HINT, classifyTicket } from './ticket'
 import { afterBash, branchMoveBefore, handleTool, INPUT_SCHEMA, TOOL_DESCRIPTION } from './tool'
@@ -328,13 +328,13 @@ export const register: Register = (on, rawOptions) => {
       await $.ui.open({ id: PANE, title: 'PR pipeline', focus: true })
       return { text: 'PR pipeline pane opened.' }
     }
-    const ticket = classifyTicket(args, options.tracker)
+    const ticket = classifyTicket(args, (await liveOptions($, options)).tracker)
     await $.prompt.submit({ text: ticket.prompt })
     await $.ui.open({ id: PANE, title: 'PR pipeline', focus: true })
     return { text: `Pipeline started for ${ticket.ticket}.` }
   })
 
-  on('tool.call', { tool: TOOL }, async ($, e) => handleTool($, e as unknown as PipelineToolInput, options))
+  on('tool.call', { tool: TOOL }, async ($, e) => handleTool($, e as unknown as PipelineToolInput, await liveOptions($, options)))
     .catch((_$, _e, next) => ({ deny: `pr-pipeline: recording the stage failed: ${next.error.message ?? next.error.kind}` }))
 
   on('tool.call', { tool: 'Bash' }, async ($, e, next) => {
@@ -353,5 +353,5 @@ export const register: Register = (on, rawOptions) => {
     return next(e)
   })
 
-  on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => renderPane($, e, options))
+  on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => renderPane($, e, await liveOptions($, options)))
 }
