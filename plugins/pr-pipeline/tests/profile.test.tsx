@@ -32,6 +32,7 @@ test('profile reads .pr-pipeline.json, fills every default and creates the crite
       e2e: null,
       e2ePolicy: 'auto',
       securityAgent: null,
+      threatModel: null,
       siblings: [],
       rules: [],
       criteriaDir: '~/.claude/pipeline/{owner}-{repo}/{ticket}',
@@ -59,6 +60,8 @@ test('without a profile file, discovery fills base, merge method, labels, checks
     '/repo/CLAUDE.md': '# rules',
     '/repo/.ai/rules/index.md': '# index',
     '/repo/.claude/agents/security-reviewer.md': '---',
+    '/repo/.claude/security-review.md': '# Security review',
+    '/repo/docs/security-review.md': '# Security review',
   })
   await $.session.start(START)
   await $.tool.call({ tool: TOOL, action: 'start', branch: 'feature/disc', ticket: '#42', tracker: 'github' })
@@ -67,13 +70,14 @@ test('without a profile file, discovery fills base, merge method, labels, checks
   expect(answer.source).toBe('discovered')
   expect(answer.path).toBeUndefined()
   expect(answer.base).toBe('main')
-  expect(answer.discovered).toBe('base main, rebase, 5 labels matched, checks from package.json, branches feat/{key}-{slug}, security-reviewer')
+  expect(answer.discovered).toBe('base main, rebase, 5 labels matched, checks from package.json, branches feat/{key}-{slug}, threat model')
   expect(answer.profile).toMatchObject({
     mergeMethod: 'rebase',
     lint: 'yarn lint',
     test: 'yarn test',
     rules: ['CLAUDE.md', '.ai/rules/index.md'],
-    securityAgent: 'security-reviewer',
+    securityAgent: null,
+    threatModel: '.claude/security-review.md',
     e2e: null,
     branchPattern: 'feat/{key}-{slug}',
     titlePrefix: '',
@@ -81,6 +85,21 @@ test('without a profile file, discovery fills base, merge method, labels, checks
     labels: { typeBug: ':bug: Bug', typeFeature: 'enhancement', stateReview: 'Code Review', readyToMerge: 'Ready to merge', aiLgtm: 'ai: lgtm', needsWork: null },
   })
   expect(answer.criteriaDir).toBe('/home/dev/.claude/pipeline/o-r/issue-42')
+})
+
+test('a profile file without threatModel takes the repo\'s threat model file; one set to null keeps null', async ($, on) => {
+  boot(on)
+  mock.store(on)
+  const files: Record<string, string> = { '/repo/.pr-pipeline.json': JSON.stringify({ lint: '', test: '' }), '/repo/SECURITY-REVIEW.md': '# Security review' }
+  fakeFs(on, files)
+  await $.session.start(START)
+  await $.tool.call({ tool: TOOL, action: 'start', branch: 'feature/tm', ticket: 'ABC-7' })
+  const found = JSON.parse(String((await $.tool.call({ tool: TOOL, action: 'profile', branch: 'feature/tm' })).result))
+  expect(found.profile.threatModel).toBe('SECURITY-REVIEW.md')
+
+  files['/repo/.pr-pipeline.json'] = JSON.stringify({ lint: '', test: '', threatModel: null })
+  const kept = JSON.parse(String((await $.tool.call({ tool: TOOL, action: 'profile', branch: 'feature/tm' })).result))
+  expect(kept.profile.threatModel).toBeNull()
 })
 
 test('lint and test from several build files are joined, composer prefixed with sail', async ($, on) => {

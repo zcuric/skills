@@ -66,14 +66,9 @@ The model and effort come from the pipeline's routing for claude; for codex, ope
 
 Take the last balanced `{…}` in the output after stripping code fences, and parse it as JSON. A reply that does not parse or misses `verdict` is re-asked once with "Answer with the JSON object only." (claude: a follow-up to the same agent; the CLI backends: the same command again). Fall back to claude at the routed model and effort (standalone: `opus`, `low`) when the reply is still invalid, the binary is missing, `review_command` is empty, the command exits non-zero, or the output is empty, and record `flag: "Review fell back to claude/<model>: <reason>"`. Keep `review-codex.json`, `review-opencode.txt` or `review-custom.txt` next to the prompt for the record.
 
-### Security pass
+### Security lane
 
-For the sensitive class (and standalone when a sensitive signal is in the diff), add a second pass:
-
-- backend claude and the profile names a `securityAgent`: spawn that agent with the prompt file's sections 2–6 plus "Report only security findings, as JSON in the `findings` shape of the contract above."
-- otherwise: run the same backend again with `security-prompt.md` from this skill's directory appended to the prompt file (write it as `<criteriaDir>/review-prompt-security.md`).
-
-Merge the security findings into the main ones by `path:line`: on a collision keep one finding with the higher severity and confidence. A high security finding sets the verdict to `changes_requested`.
+Every review also runs a security lane: a second read-only agent that reviews only the security surface and what it reaches (this repo, the sibling systems, third parties), in parallel with the main reviewer, its findings merged into this one review. It runs for every class and standalone, at a depth the diff's surface decides (`skip`, `standard`, `deep`); a `sensitive` class forces `deep`. Read `security.md` in this directory before writing the review prompt: it has the depth signals, the prompt file, the dispatch, the merge, `<criteriaDir>/security.json` and the body's `Security:` line. Dispatch it in the same message as the main reviewer.
 
 ## Verify
 
@@ -81,6 +76,7 @@ Every finding is checked against the code before it is posted. Who checks depend
 
 - **Cost high (sensitive, architecture, business-logic), and standalone when the diff shows a sensitive signal:** a separate verifier, because the session that drove the implementation is a poor judge of findings against it. Write `<criteriaDir>/verify-prompt.md`: `verify-prompt.md` from this skill's directory, then the base SHA and the merged findings as JSON. Run it on the review's backend: claude through the Agent tool (`subagent_type: "pr-pipeline:checker"`, the routed model at `low` effort); a CLI backend with its command from the table, reading that file and writing `verify-<backend>.txt`. The reply is parsed, re-asked and falls back as the review's is. It votes `real`, `not_real` or `unsure` per finding. Drop a finding only on `not_real` with its refuting line; keep `real` at the reviewer's confidence; an `unsure` drops the confidence to 55, which holds it for stage 5. Take `pre_existing` from the verifier where it differs.
 - **Every other class:** check each finding yourself: open the file at the line. Drop a finding whose claim the code does not support. Keep the reviewer's confidence where you agree; lower it when you half agree.
+- **Security findings, every class:** the separate verifier above, with each finding's `attack` in the JSON. In a class you would check yourself, the verifier gets only the security findings.
 
 A finding whose line the diff does not touch is `pre_existing`, whatever the reviewer said.
 
@@ -89,7 +85,7 @@ Post a line comment only when all of these hold:
 - Its confidence after your check is 60 or more.
 - It is a defect: wrong behaviour, data exposure or loss, a broken contract, a test that cannot fail. Style, naming, comment length and "consider" are not posted.
 - The ticket, the criteria or the PR body does not already answer it. An open question goes in the body as one `Question:` line.
-- It is the only thread for its root cause. A security-pass duplicate merges into it silently, and the other places of a repeated defect go on its `Also at` line, never in threads of their own.
+- It is the only thread for its root cause. A security-lane duplicate merges into it silently, and the other places of a repeated defect go on its `Also at` line, never in threads of their own.
 - It was not posted in an earlier round. A finding still open from before is left to its existing thread.
 
 A `pre_existing` finding that passes these is posted with `pre-existing` in place of the severity, so it does not read as the author's mistake, and never moves the verdict or the score. One whose line is outside the diff cannot take a line comment: it becomes a `Pre-existing:` line in the body, three at most.
@@ -126,7 +122,7 @@ If the client is archived between submit and the job, both files with full SSNs 
 Check the taxpayer is active with a fresh query before building either file.
 ````
 
-Line 1 is the severity emoji (🔴 high, 🟠 medium, 🟡 low, ⚪ pre-existing), then in bold the severity and the confidence after your check in brackets, plus the consequence a user or operator would see, not the mechanism; a pre-existing one reads `⚪ **[pre-existing · 80%] …**`. Then at most two sentences on when it happens and why, naming one or two identifiers. Then the fix in one sentence, or a `suggestion` block when the reviewer gave replacement code that compiles in place. A repeated defect ends with `Also at `path:line`, `path:line`.` 80 words at most outside the suggestion and that line. No image badges, no provenance tags ("security pass agrees"), no praise, no restating what the line does.
+Line 1 is the severity emoji (🔴 high, 🟠 medium, 🟡 low, ⚪ pre-existing), then in bold the severity and the confidence after your check in brackets, plus the consequence a user or operator would see, not the mechanism; a pre-existing one reads `⚪ **[pre-existing · 80%] …**`. Then at most two sentences on when it happens and why, naming one or two identifiers. Then the fix in one sentence, or a `suggestion` block when the reviewer gave replacement code that compiles in place. A repeated defect ends with `Also at `path:line`, `path:line`.` 80 words at most outside the suggestion and that line. No image badges, no provenance tags ("security lane agrees"), no praise, no restating what the line does.
 
 ### Body
 
@@ -134,6 +130,8 @@ Line 1 is the severity emoji (🔴 high, 🟠 medium, 🟡 low, ⚪ pre-existing
 **AI review: changes requested** · 🔴 **2/5** significant bugs · confidence 🟢 **86%**
 
 Archived clients can still receive the unmasked files, and the retry path sends the email twice. The export itself does what the ticket asks.
+
+Security: 1 high · output
 
 | | Finding | Where | Confidence |
 | --- | --- | --- | --- |
@@ -153,6 +151,8 @@ A clean review:
 
 The export now leaves the address columns empty for accounts without a billing address, and the new test fails without the fix.
 
+Security: clean · 9 areas checked, 3 n/a
+
 Checked: the null-address path in `ExportService::row()`, both callers, the new test.
 ````
 
@@ -167,8 +167,9 @@ Checked: the null-address path in `ExportService::row()`, both callers, the new 
   | 2 | one high | significant bugs | 🔴 |
   | 1 | two or more high | needs rework | 🔴 |
 
-- **Confidence** is the reviewer's `confidence`: 🟢 at 80 or more, 🟡 60–79, 🔴 under 60. When the answer has none (an older custom command), leave the segment off rather than invent one. The security pass's `confidence` is ignored.
+- **Confidence** is the reviewer's `confidence`: 🟢 at 80 or more, 🟡 60–79, 🔴 under 60. When the answer has none (an older custom command), leave the segment off rather than invent one. The security lane does not move it.
 - The conclusion paragraph is the reviewer's `summary`: what the change does and what is wrong with it, in plain words. Rewrite it when verification dropped the finding it names.
+- `Security:` always, right after the conclusion: the line `security.md` defines.
 - The findings table has one row per posted line comment, sorted high, medium, low, pre-existing: the severity with its emoji, the title linked to its line comment, `path:line`, the confidence after your check. Omit it when nothing was posted.
 - `Checked:` only when nothing was posted: the reviewer's `checked`, joined with commas, so a reader sees what a clean pass rests on.
 - `Criteria:` only when the reviewer marked a criterion `false` or `partial`: `n of m met`, then the unmet and partial ones quoted.
@@ -209,4 +210,4 @@ Swap the labels from the profile map; a `null` key is skipped:
 gh pr edit <n> --remove-label "<labels.aiChangesRequested>" --add-label "<labels.aiLgtm>"   # or the reverse
 ```
 
-Record with `mcp__pr-pipeline__pipeline` on stage `review`: the `running` call carries `backend`, `model` and `effort`; the closing call has status `done`, summary the verdict, the score and the findings: `lgtm · 5/5 · no findings`, `lgtm · 4/5 · 3 findings` or `changes requested · 2/5 · 1 high` (keep the literal phrase `changes requested`; the pane keys on it), ending `· held n` when findings went to `review-held.json` (`lgtm · 4/5 · 2 findings · held 1`), confidence = the reviewer's `confidence` (its `description_confidence` when absent), one `did` per posted finding (`src/orders/total.ts:42 · high · null customer`; a pre-existing one reads `· pre-existing ·`), a `note` per reviewer acceptance verdict that is `false` or `partial` and per finding held for stage 5, a `flag` per finding dropped as unverifiable (on the verifier's `not_real`, with its refuting line) and per fallback, and a `link` to the review URL the API returned (`html_url`). End with `{ action: "pr" }` so the pane's Threads card shows the new comments. Standalone with no pipeline run for the branch, skip recording: the tool refuses stage calls without a run.
+Record with `mcp__pr-pipeline__pipeline` on stage `review`: the `running` call carries `backend`, `model` and `effort`; the closing call has status `done`, summary the verdict, the score and the findings: `lgtm · 5/5 · no findings`, `lgtm · 4/5 · 3 findings` or `changes requested · 2/5 · 1 high` (keep the literal phrase `changes requested`; the pane keys on it), ending `· held n` when findings went to `review-held.json` (`lgtm · 4/5 · 2 findings · held 1`), confidence = the reviewer's `confidence` (its `description_confidence` when absent), one `did` per posted finding (`src/orders/total.ts:42 · high · null customer`; a pre-existing one reads `· pre-existing ·`), a `note` per reviewer acceptance verdict that is `false` or `partial` and per finding held for stage 5, a `flag` per finding dropped as unverifiable (on the verifier's `not_real`, with its refuting line) and per fallback, the security lane's `note` and `flag`s (`security.md`, step 7), and a `link` to the review URL the API returned (`html_url`). End with `{ action: "pr" }` so the pane's Threads card shows the new comments. Standalone with no pipeline run for the branch, skip recording: the tool refuses stage calls without a run.

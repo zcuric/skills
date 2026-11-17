@@ -2,7 +2,7 @@
 
 The run, review and risk skills are written for Claude Code, where a pane records the run and a tool (`mcp__pr-pipeline__pipeline`) feeds it. In Codex, OpenCode or any other agent that can read files and run `git` and `gh`, the nine stages, the spec, the review rules, the PR body and the proof are the same. Only the plumbing differs: there is no pane, so the record lives in a file, and each tool call becomes a file write or a `gh` command.
 
-Read this once at the start, then follow the skills as written with the substitutions below. Where a skill names another skill (`pr-pipeline:review`, `pr-pipeline:risk`), read that skill's `SKILL.md` in the sibling directory (`../review/`, `../risk/`). When a skill directory is a symlink, resolve its real path first, so `../` and `agents/reviewer.md` (two directories up) are found.
+Read this once at the start, then follow the skills as written with the substitutions below. Where a skill names another skill (`pr-pipeline:review`, `pr-pipeline:risk`), read that skill's `SKILL.md` in the sibling directory (`../review/`, `../risk/`). When a skill directory is a symlink, resolve its real path first, so `../`, `agents/reviewer.md` and `agents/security.md` (two directories up) are found.
 
 ## The run record
 
@@ -57,9 +57,10 @@ gh api graphql -f query='mutation($t:ID!){resolveReviewThread(input:{threadId:$t
 
 ## Review
 
-The rule that matters most carries over unchanged: the session that wrote the code does not review it. The reviewer, the security pass and the verifier each run in a fresh process that sees only the prompt file.
+The rule that matters most carries over unchanged: the session that wrote the code does not review it. The reviewer, the security lane and the verifier each run in a fresh process that sees only its prompt file.
 
 - Default backend: this harness's own CLI, non-interactive and read-only where it can be, with `<criteriaDir>/review-prompt.md` as the whole prompt, the reviewer rules from `agents/reviewer.md` included as section 1 and the diff as section 7. For Codex and OpenCode the commands are the ones in the review skill's backend table.
+- The security lane runs the same way, with `<criteriaDir>/security-prompt.md` as the whole prompt: the body of `agents/security.md` as section 1, the diff last. It starts beside the reviewer when the harness can run a second process, otherwise right after it.
 - A second harness installed (`claude`, `codex`, `opencode`): offer it in the stage-1 question. A reviewer from a different model family than the implementer catches more. `claude` here is `claude -p --model <model> --permission-mode plan < <criteriaDir>/review-prompt.md`.
 - Where the review skill says "fall back to claude", fall back to this harness's default backend, and flag it the same way.
 - A harness with no way to start a fresh process reviews in this session, reading only the prompt file and the code, and records `flag: "Review ran in the implementing session; get a second look"`.

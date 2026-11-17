@@ -30,6 +30,7 @@
     "e2e": { "type": ["string", "null"] },
     "e2ePolicy": { "type": "string", "enum": ["auto", "always", "never"] },
     "securityAgent": { "type": ["string", "null"] },
+    "threatModel": { "type": ["string", "null"] },
     "siblings": {
       "type": "array",
       "items": {

@@ -5,6 +5,7 @@ import { gh, git, runCommand } from './github'
 
 export const PROFILE_FILES = ['.pr-pipeline.json', '.claude/pr-pipeline.json'] as const
 const RULE_FILES = ['CLAUDE.md', 'AGENTS.md', '.ai/rules/index.md']
+const THREAT_MODEL_FILES = ['SECURITY-REVIEW.md', '.claude/security-review.md', 'docs/security-review.md']
 const DEFAULT_BRANCH_PATTERN = '{type}/{key}-{slug}'
 const DEFAULT_CRITERIA_DIR = '~/.claude/pipeline/{owner}-{repo}/{ticket}'
 const TICKET_KEY = /^[A-Z][A-Z0-9]+-\d+$/i
@@ -163,6 +164,12 @@ async function discoverRules($: EngineInterface, root: string): Promise<string[]
   return found
 }
 
+/** The first threat model file that exists, repo-relative. */
+async function discoverThreatModel($: EngineInterface, root: string): Promise<string | undefined> {
+  for (const name of THREAT_MODEL_FILES) if (await exists($, `${root}/${name}`)) return name
+  return undefined
+}
+
 type RepoTarget = { root: string; slug?: string; host?: string }
 
 const repoArgs = (target: RepoTarget): string[] => (target.slug !== undefined ? ['--repo', target.slug] : [])
@@ -196,14 +203,14 @@ async function discoverBranchPattern($: EngineInterface, target: RepoTarget): Pr
 }
 
 async function discover($: EngineInterface, target: RepoTarget): Promise<{ found: Found; summary: string }> {
-  const [repo, labels, branchPattern, checks, rules, hasE2e, hasSecurity] = await Promise.all([
+  const [repo, labels, branchPattern, checks, rules, hasE2e, threatModel] = await Promise.all([
     discoverRepo($, target),
     discoverLabels($, target),
     discoverBranchPattern($, target),
     discoverChecks($, target.root),
     discoverRules($, target.root),
     exists($, `${target.root}/.claude/skills/e2e-verify/SKILL.md`),
-    exists($, `${target.root}/.claude/agents/security-reviewer.md`),
+    discoverThreatModel($, target.root),
   ])
   const matched = Object.values(labels).filter(label => label !== null).length
   const found: Found = {
@@ -213,7 +220,7 @@ async function discover($: EngineInterface, target: RepoTarget): Promise<{ found
     ...(checks.lint.length > 0 ? { lint: checks.lint.join(' && ') } : {}),
     ...(checks.test.length > 0 ? { test: checks.test.join(' && ') } : {}),
     ...(hasE2e ? { e2e: 'e2e-verify' } : {}),
-    ...(hasSecurity ? { securityAgent: 'security-reviewer' } : {}),
+    ...(threatModel !== undefined ? { threatModel } : {}),
     rules,
   }
   const summary = [
@@ -223,7 +230,7 @@ async function discover($: EngineInterface, target: RepoTarget): Promise<{ found
     checks.sources.length > 0 ? `checks from ${checks.sources.join(', ')}` : 'no lint or test found',
     branchPattern !== undefined ? `branches ${branchPattern}` : null,
     hasE2e ? 'e2e-verify' : null,
-    hasSecurity ? 'security-reviewer' : null,
+    threatModel !== undefined ? 'threat model' : null,
   ].filter((part): part is string => part !== null).join(', ')
   return { found, summary }
 }
@@ -250,6 +257,7 @@ function withDefaults(given: Found, rest: { tracker?: Tracker }): RepoProfile {
     e2e: given.e2e ?? null,
     e2ePolicy: given.e2ePolicy ?? 'auto',
     securityAgent: given.securityAgent ?? null,
+    threatModel: given.threatModel ?? null,
     siblings: given.siblings ?? [],
     rules: given.rules ?? [],
     criteriaDir: given.criteriaDir ?? DEFAULT_CRITERIA_DIR,
@@ -312,11 +320,12 @@ async function readProfileFile($: EngineInterface, root: string): Promise<{ path
   return null
 }
 
-/** The base branch, and the fields a profile file left out whose default is the repo's own: lint, test, rules, merge method. */
+/** The base branch, and the fields a profile file left out whose default is the repo's own: lint, test, rules, threat model, merge method. */
 async function fillFromRepo($: EngineInterface, given: Found, target: RepoTarget): Promise<Found> {
   const needsChecks = given.lint === undefined || given.test === undefined
   const checks = needsChecks ? await discoverChecks($, target.root) : { lint: [], test: [], sources: [] }
   const rules = given.rules === undefined ? await discoverRules($, target.root) : given.rules
+  const threatModel = given.threatModel === undefined ? await discoverThreatModel($, target.root) : given.threatModel
   const repo = await discoverRepo($, target)
   const mergeMethod = given.mergeMethod ?? repo.mergeMethod
   return {
@@ -325,6 +334,7 @@ async function fillFromRepo($: EngineInterface, given: Found, target: RepoTarget
     ...(given.lint === undefined && checks.lint.length > 0 ? { lint: checks.lint.join(' && ') } : {}),
     ...(given.test === undefined && checks.test.length > 0 ? { test: checks.test.join(' && ') } : {}),
     rules,
+    ...(threatModel !== undefined ? { threatModel } : {}),
     ...(mergeMethod !== undefined ? { mergeMethod } : {}),
   }
 }

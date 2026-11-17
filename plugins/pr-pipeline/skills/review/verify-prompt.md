@@ -12,6 +12,10 @@ For each finding, open the file at the cited line and read enough around it (the
 
 A finding is `not_real` only with the refuting line in hand. Doubt alone is `unsure`. Also say whether the cited line was written by this diff (`git diff <base>...HEAD -- <path>`) or was there before.
 
+## Findings with an attack
+
+A security finding carries an `attack`: the `actor`, the `entry` they come in through, and the `gain`. Vote `real` only when all three hold: the actor can reach the entry as it is registered (the route and its whole middleware or guard stack, the job's dispatcher, the webhook's verification); no guard one layer up stops it (router middleware, a global scope or base class, the request validator, a framework default such as auto-escaping, parameter binding or CSRF protection); and the gain follows from the cited line. `not_real` needs the guarding line quoted.
+
 Answer with JSON only:
 
 ```json

@@ -250,6 +250,7 @@ export type RepoProfile = {
   e2e: string | null
   e2ePolicy: 'auto' | 'always' | 'never'
   securityAgent: string | null
+  threatModel: string | null
   siblings: ProfileSibling[]
   rules: string[]
   criteriaDir: string

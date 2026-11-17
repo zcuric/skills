@@ -48,7 +48,7 @@ At the start it asks you one question, at most, covering only what it cannot dec
 | 1 | Enhance | Reads the ticket, writes the acceptance criteria and a spec, posts the spec on the ticket, classifies the task and picks models; asks you to confirm the spec when the work is risky or the criteria had to be derived |
 | 2 | Implement | Branches, reproduces a bug with a failing test first, implements, lints, tests, commits |
 | 3 | Create PR | Opens the PR with a skimmable body (link line, status strip, summary, one diagram, test plan) and labels |
-| 4 | AI review | Posts one review: the verdict, a 1–5 score and the reviewer's confidence on top, a short conclusion, a findings table sorted by severity, and a line comment per confirmed defect; swaps the AI label. Starts together with stage 6 |
+| 4 | AI review | Posts one review: the verdict, a 1–5 score and the reviewer's confidence on top, a short conclusion, a findings table sorted by severity, and a line comment per confirmed defect; a security lane reviews the security surface beside it (see [Security review](#security-review)); swaps the AI label. Starts together with stage 6 |
 | 5 | Address | Fixes findings, replies in each thread with the commit, resolves it; a finding it turns down is resolved with the reason and flagged |
 | 6 | E2E verify | A quick check first (see below); then drives the real app in the background while stage 4 reviews: the repo's e2e skill, else a browser smoke from `.claude/launch.json`, else skipped with the reason. Defects it finds are fixed and driven again after stage 5 |
 | 7 | Acceptance | First a delta review of any commits since the AI review (changes requested there stops the run); then a separate read-only agent checks every criterion against the evidence (test, screenshot, log line) and its verdicts are recorded as they stand; a gap loops back to stage 2 once |
@@ -98,13 +98,25 @@ Not every change needs the running app. Before stage 6 starts, the pipeline chec
 What stage 4 does to keep its comments few and worth reading:
 
 - It reviews the diff against the repo, not on its own. It opens the callers and callees of what changed, and holds the change against the ticket's criteria and the claims in the PR description. For a bug fix it checks that the cause is gone, not only the symptom.
-- Every finding is checked against the code before it is posted. For sensitive, architecture and business-logic work a separate verifier does the check, and a finding is dropped only when the verifier quotes the line that refutes it.
+- Every finding is checked against the code before it is posted. For sensitive, architecture and business-logic work, and for every security finding, a separate verifier does the check, and a finding is dropped only when the verifier quotes the line that refutes it.
 - Only defects are posted: wrong behaviour, data exposure or loss, a broken contract, a test that cannot fail. Each is one line comment that opens with the consequence. Style, naming and "consider" are never posted.
 - A defect that repeats is one thread with an `Also at` line, so the whole class is fixed in one round. A defect the PR did not write is marked `pre-existing` and never moves the verdict or the score.
 - The review body reads at a glance: `**AI review: changes requested** · 🔴 **2/5** significant bugs · confidence 🟢 **86%**`, a one- or two-sentence conclusion, then one table row per line comment (severity, linked title, `path:line`, confidence). The score is computed from what survived verification, not taken from the reviewer. A clean review says what it checked instead of the table. Each line comment opens with its severity and confidence: `🔴 **[high · 92%] …**`.
 - Later rounds review only the commits since the last review and do not repeat what was already posted. The third review of a PR is the last: the run stops and asks for a person, because further rounds mostly turn up older bugs in the same code.
 - Every thread ends fixed, or resolved with a one-sentence reason. None is left open for you to chase.
 - It never approves. The verdict is a comment and a label; people approve.
+
+## Security review
+
+Every PR with security surface gets a security review inside stage 4, beside the main review, in its own agent, and its findings land in the same posted review.
+
+- **Depth comes from the diff, not the ticket.** Changes that touch only copy, style, docs, tests or static assets skip it. Entry points, data access, output shapes, input handling and outbound calls get a standard pass. Guards (auth, sessions, policies, tenant scoping), secrets and config, CI and infra, dependency manifests and cross-system boundaries get a deep one, and so does every sensitive ticket.
+- **It compares and traces.** Each new entry point is compared with its nearest sibling's guards, each input followed to its sink, each changed guard or output shape followed to everything that relies on it.
+- **Three impact rings.** This repo (every user of a changed middleware, scope or serializer), the first-party systems in the profile's `siblings` (read at their default branch, working tree untouched), and third parties (what data now leaves, how inbound calls are verified).
+- **Every finding names an attack**: who, through which entry, gaining what. A separate verifier checks it against the whole guard stack before it is posted.
+- **The review says what was covered.** One line under the conclusion: `Security: clean · 9 areas checked, 3 n/a`, or `Security: 1 high · authz`, plus what could not be checked (`not verified: first_party (billing-api is not checked out)`).
+
+Give it your repo's rules with a threat model: copy [`profiles/security-review.example.md`](profiles/security-review.example.md) to `SECURITY-REVIEW.md` and fill in the actors, entry points, numbered invariants, sensitive data, connected systems, extra surface and accepted risks. The security lane checks the invariants first, and the implementer reads the file before writing code.
 
 ## What it costs
 
@@ -119,7 +131,7 @@ Stage 1 sorts the task into a class, and the class decides which model does each
 | query-perf | mid | opus, high-effort review, e2e with a measurement |
 | business-logic | high | opus high |
 | architecture | high | opus high |
-| sensitive (auth, permissions, money, PII, migrations, contracts, infra, secrets, dependency bumps) | high | opus high everywhere, plus a security review pass |
+| sensitive (auth, permissions, money, PII, migrations, contracts, infra, secrets, dependency bumps) | high | opus high everywhere, and the deep security review |
 
 Each stage row in the pane carries a chip with the model that ran it (`opus·high`, `codex·gpt-5-codex`). The start question lets you switch a run to opus everywhere.
 
@@ -149,7 +161,7 @@ The AI review runs on claude by default (opus at low effort unless the task clas
 - **opencode**: runs `opencode run --model provider/model`; effort is ignored; any file it touches is reverted and flagged.
 - **custom**: any other agent CLI. Set `review_command` to a command that takes the review prompt on stdin and prints its answer, with `{model}` where the model name goes (`your-agent --print --model {model}`). Effort is ignored; any file it touches is reverted and flagged. The command is read from your own settings only, never from a repo file, a ticket or a PR, and the pipeline cannot set it for you: you type it in `/config` or the pane's Settings.
 
-The security pass and the verifier run on the same backend as the review.
+The security lane and the verifier run on the same backend as the review.
 
 If the chosen backend is missing, has no command, fails, or answers with something that is not the review JSON after one retry, the review falls back to claude and the stage shows a warning saying so.
 
@@ -168,7 +180,7 @@ A GUI that sits on top of an agent (T3 Code, for example) runs the pipeline thro
 
 This path has not had a full end-to-end run yet. Expect rough edges.
 
-The prompts also work on their own, in any agent or in CI: [`agents/reviewer.md`](agents/reviewer.md) (review rules and the JSON contract), [`skills/review/verify-prompt.md`](skills/review/verify-prompt.md), [`skills/review/security-prompt.md`](skills/review/security-prompt.md) and [`skills/run/spec-format.md`](skills/run/spec-format.md) each take a diff or a ticket and need nothing from the plugin.
+The prompts also work on their own, in any agent or in CI: [`agents/reviewer.md`](agents/reviewer.md) (review rules and the JSON contract), [`agents/security.md`](agents/security.md) (security method, impact rings and the JSON contract), [`skills/review/verify-prompt.md`](skills/review/verify-prompt.md) and [`skills/run/spec-format.md`](skills/run/spec-format.md) each take a diff or a ticket and need nothing from the plugin.
 
 ## Settings
 
@@ -199,13 +211,14 @@ Each repo can describe its conventions in `.pr-pipeline.json` at the root (or `.
 | `test` | discovered, as for `lint` | Test command; narrowed to touched files where the runner allows. |
 | `e2e` | `null` (`e2e-verify` when the repo has that skill) | Skill that drives the real stack at stage 6. Without one, a browser smoke from `.claude/launch.json`. |
 | `e2ePolicy` | `auto` | Whether stage 6 runs. `auto`: runs unless every changed file is copy, style, docs, config, CI or a manifest and no criterion needs the running stack. `always`: every run. `never`: never. |
-| `securityAgent` | `null` (`security-reviewer` when the repo has that agent) | Agent for the security pass on sensitive work, when the review backend is claude. Otherwise the plugin's own security prompt. |
-| `siblings` | `[]` | Related repos as `{ name, path, contracts }`. Cross-repo work branches there too; `contracts: true` marks the repo that owns shared data contracts. |
+| `securityAgent` | `null` | An agent that runs the security lane in place of the plugin's own, when the review backend is claude. It gets the whole security prompt, method and JSON contract included. Never discovered: set it only on purpose. |
+| `threatModel` | `null` (the first of `SECURITY-REVIEW.md`, `.claude/security-review.md`, `docs/security-review.md` that exists) | The repo's threat model, repo-relative. The implementer reads it before writing code and the security lane checks its invariants first. |
+| `siblings` | `[]` | Related repos as `{ name, path, contracts }`. Cross-repo work branches there too, and the security lane reads them at their default branch to check the effect on connected systems; `contracts: true` marks the repo that owns shared data contracts. |
 | `rules` | whichever of `CLAUDE.md`, `AGENTS.md`, `.ai/rules/index.md` exist | Files the implementer and the reviewer must follow. |
 | `criteriaDir` | `~/.claude/pipeline/{owner}-{repo}/{ticket}` | Where the run keeps acceptance criteria, the spec, review files and screenshots. Outside the checkout so worktrees and subagents share it. |
 | `mergeMethod` | the repo's allowed method, squash first | Merge method for this repo. |
 
-Discovery (the `profile` action, when there is no file) reads `gh repo view`, `gh label list` (matching `bug`, `feature`/`enhancement`, `review`, `ready to merge`, `needs (more) work` and the `ai: …` labels by name), the build files above, the repo's `.claude/skills` and `.claude/agents`, recent branch names, and the rule files.
+Discovery (the `profile` action, when there is no file) reads `gh repo view`, `gh label list` (matching `bug`, `feature`/`enhancement`, `review`, `ready to merge`, `needs (more) work` and the `ai: …` labels by name), the build files above, the repo's `.claude/skills`, recent branch names, the rule files, and the threat model files named under `threatModel`.
 
 ## Files
 
@@ -213,9 +226,10 @@ Discovery (the `profile` action, when there is no file) reads `gh repo view`, `g
 | --- | --- |
 | `hooks/` | The pane, the `mcp__pr-pipeline__pipeline` tool, PR polling, Merge and the other pane buttons |
 | `skills/run/` | The conductor that drives the nine stages, plus the spec format, the acceptance-check prompt, tracker adapters, open-PR start, PR body template and the guide for other harnesses |
-| `skills/review/` | The AI review, its backends, and the verifier and security prompts |
+| `skills/review/` | The AI review, its backends, the verifier prompt, and the security lane's procedure (`security.md`) |
 | `skills/risk/` | The merge-risk verdict |
 | `agents/reviewer.md` | The read-only reviewer the review skill dispatches |
+| `agents/security.md` | The read-only security reviewer the review skill dispatches beside the main reviewer; also the security prompt for other backends |
 | `agents/checker.md` | The read-only checker that verifies review findings and checks the acceptance criteria |
-| `profiles/` | Profile schema and a filled-in example |
+| `profiles/` | Profile schema, a filled-in example, and a threat model skeleton (`security-review.example.md`) |
 | `evals/` | What three end-to-end runs should show (GitHub issue without a profile, Jira with a profile, a task in words) |

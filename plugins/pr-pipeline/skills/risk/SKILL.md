@@ -15,9 +15,9 @@ gh pr diff <n>
 gh api repos/{owner}/{repo}/pulls/<n>/comments
 ```
 
-Also read, when they exist: `<criteriaDir>/acceptance.md`, `<criteriaDir>/review.json`, the screenshots and measurements in `<criteriaDir>/e2e/`, and the e2e artifact the pipeline linked. Standalone, `<criteriaDir>` comes from the repo profile (default `~/.claude/pipeline/{owner}-{repo}/{ticket}`); when it does not exist, judge from the PR alone and say so under Verification. Open every changed file at the changed lines; a verdict on the diff alone is a guess.
+Also read, when they exist: `<criteriaDir>/acceptance.md`, `<criteriaDir>/review.json`, `<criteriaDir>/security.json`, the screenshots and measurements in `<criteriaDir>/e2e/`, and the e2e artifact the pipeline linked. Standalone, `<criteriaDir>` comes from the repo profile (default `~/.claude/pipeline/{owner}-{repo}/{ticket}`); when it does not exist, judge from the PR alone and say so under Verification. Open every changed file at the changed lines; a verdict on the diff alone is a guess.
 
-The pipeline passes the task class. A sensitive class, or any sensitive signal in the diff (the list under Impact), raises Impact to at least medium regardless of how small the change is.
+The pipeline passes the task class. A sensitive class, or any sensitive signal in the diff (the list under Impact), raises Impact to at least medium regardless of how small the change is. So does a security area `security.json` leaves `not_verified`, or a security finding there that is still open (its thread unresolved, or held and not yet fixed); each gets an Impact bullet naming it.
 
 ## Categories
 
