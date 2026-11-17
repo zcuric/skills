@@ -3,10 +3,9 @@ import type { EngineInterface, Timer } from 'claude-code'
 
 import type { MergeMethod, PipelineRun, PrRef, PrSnapshot, PrState, PrSummary, PrThread, ReplyBox, Runs } from '../types'
 import { fetchPr, mergePr, parsePrUrl, replyToThread, rerunFailed, resolveThread, toSummary } from './github'
-import { changeRun, closeRun, pickedKey, pollStoreKey, pruneStore } from './runs'
+import { changeRun, closeRun, concernsSession, isSessionKey, pickedKeyFor, pollStoreKey, pruneStore, sessionScope } from './runs'
 
 const runs = atom({ plugin: 'pr-pipeline', key: 'runs' } as const, {} as Runs)
-const selectedKey = atom({ plugin: 'pr-pipeline', key: 'selectedKey' } as const, null as string | null)
 const prStates = atom({ plugin: 'pr-pipeline', key: 'pr' } as const, {} as Record<string, PrState>)
 const replying = atom({ plugin: 'pr-pipeline', key: 'replying' } as const, null as ReplyBox | null)
 const drafts = atom({ plugin: 'pr-pipeline', key: 'drafts' } as const, {} as Record<string, string>)
@@ -16,6 +15,7 @@ const DEBOUNCE_MS = 15_000
 const STUCK_FETCH_MS = 45_000
 export const CLOSE_AFTER_MS = 5 * 60_000
 const OTHER_RUN_POLL_MS = 10 * 60_000
+const FOREIGN_RUN_POLL_MS = 6 * 60 * 60_000
 const POLL_GAP_MS = 55_000
 const SETTLED_POLL_MS = 5 * 60_000
 export const REPLY_HOLD_MS = 10 * 60_000
@@ -68,7 +68,8 @@ export async function refreshPr(
   const snapshot = fetched.snapshot
   const next: PrState = { snapshot, fetchedAt: now, isFetching: false }
   await update($, prStates, all => (JSON.stringify(all[key]) === JSON.stringify(next) ? all : { ...all, [key]: next }))
-  transitionToasts($, current?.snapshot ?? run.pr, snapshot)
+  const isOurs = await concernsSession($, key)
+  if (isOurs) transitionToasts($, current?.snapshot ?? run.pr, snapshot)
 
   const summary = toSummary(snapshot)
   const isNewlyMerged = snapshot.state === 'MERGED' && run.mergedAt === undefined
@@ -79,7 +80,7 @@ export async function refreshPr(
       mergedAt: isNewlyMerged ? now : existing.mergedAt,
     }), { touch: false })
   }
-  if (isNewlyMerged) $.ui.toast(`PR #${snapshot.number} merged · run closes in 5 min`)
+  if (isNewlyMerged && isOurs) $.ui.toast(`PR #${snapshot.number} merged · run closes in 5 min`)
   return next
 }
 
@@ -161,15 +162,27 @@ async function closeEndedRuns($: EngineInterface, now: number): Promise<void> {
   for (const run of Object.values(await read($, runs))) {
     const reason = endReason(run, now)
     if (reason === null) continue
+    const isOurs = await concernsSession($, run.key)
     await closeRun($, run.key)
-    $.ui.toast(`Run ${run.ticket ?? run.branch} ${reason}`)
+    if (isOurs) $.ui.toast(`Run ${run.ticket ?? run.branch} ${reason}`)
   }
 }
 
 const isPolled = (run: PipelineRun | undefined): run is PipelineRun =>
   run?.prUrl !== undefined && run.closedAt === undefined && run.pr?.state !== 'CLOSED'
 
-/** Polls the selected run, plus the one other run whose PR was fetched longest ago, so its merge is seen and it closes. */
+/** The run in `candidates` whose PR was fetched longest ago, when that was at least `gap` ago. */
+async function stalestRun($: EngineInterface, candidates: PipelineRun[], now: number, gap: number): Promise<PipelineRun | undefined> {
+  const polled = await Promise.all(candidates.map(async run => ({ run, at: await lastPolledAt($, run) })))
+  const stalest = polled.sort((a, b) => a.at - b.at)[0]
+  if (stalest === undefined || now - stalest.at < gap) return undefined
+  return stalest.run
+}
+
+/**
+ * Polls the picked run, then the session's other run fetched longest ago, so its merge is seen and it closes;
+ * another session's run only once no session fetched it for six hours.
+ */
 export async function tick($: EngineInterface): Promise<void> {
   const now = await $.clock.now()
   await resetStuckFetches($, now)
@@ -177,14 +190,15 @@ export async function tick($: EngineInterface): Promise<void> {
   await pruneStore($)
   const held = await heldKey($, now)
   const all = await read($, runs)
-  const key = pickedKey(all, await read($, selectedKey))
+  const key = await pickedKeyFor($)
   const selected = key === null ? undefined : all[key]
   if (isPolled(selected) && selected.key !== held && (await isPollDue($, selected, now))) await refreshPr($, selected.key, { reason: 'poll' })
+  const scope = await sessionScope($)
   const others = Object.values(all).filter(run => run.key !== key && run.key !== held && run.mergedAt === undefined && isPolled(run))
-  const polled = await Promise.all(others.map(async run => ({ run, at: await lastPolledAt($, run) })))
-  const stalest = polled.sort((a, b) => a.at - b.at)[0]
-  if (stalest === undefined || now - stalest.at < OTHER_RUN_POLL_MS) return
-  await refreshPr($, stalest.run.key, { reason: 'poll-other' })
+  const related = await stalestRun($, others.filter(run => isSessionKey(run.key, scope)), now, OTHER_RUN_POLL_MS)
+  if (related !== undefined) await refreshPr($, related.key, { reason: 'poll-other' })
+  const foreign = await stalestRun($, others.filter(run => !isSessionKey(run.key, scope)), now, FOREIGN_RUN_POLL_MS)
+  if (foreign !== undefined) await refreshPr($, foreign.key, { reason: 'poll-foreign' })
 }
 
 export const failedChecks = (snapshot: PrSnapshot): PrSnapshot['checks'] =>

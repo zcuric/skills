@@ -1,6 +1,6 @@
 import { expect, mock, test } from 'claude-code/testing'
 
-import { boot, fakeFs, ran, START, TOOL } from './kit'
+import { boot, fakeFs, isPrLookup, ran, START, TOOL } from './kit'
 import { branchPatternOf, matchLabels, pathSafeTicket } from '../hooks/profile'
 
 const REPO_VIEW = { nameWithOwner: 'o/r', defaultBranchRef: { name: 'main' }, squashMergeAllowed: false, rebaseMergeAllowed: true, mergeCommitAllowed: true }
@@ -41,7 +41,7 @@ test('profile reads .pr-pipeline.json, fills every default and creates the crite
     criteriaDir: '/home/dev/.claude/pipeline/o-r/ABC-123',
   })
   expect(ran(calls, 'mkdir')).toEqual([['mkdir', '-p', '/home/dev/.claude/pipeline/o-r/ABC-123']])
-  expect(ran(calls, 'gh').map(argv => argv.slice(0, 3))).toEqual([['gh', 'repo', 'view']])
+  expect(ran(calls, 'gh').filter(argv => !isPrLookup(argv)).map(argv => argv.slice(0, 3))).toEqual([['gh', 'repo', 'view']])
   const run = JSON.parse(String((await $.tool.call({ tool: TOOL, action: 'status', branch: 'feature/abc-123' })).result))
   expect(run.criteriaDir).toBe('/home/dev/.claude/pipeline/o-r/ABC-123')
   expect(run.mergeMethod).toBe('merge')

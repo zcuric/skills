@@ -3,12 +3,14 @@ import type { Color as EngineColor, EngineInterface, PluginOptions } from 'claud
 
 import type {
   Backend,
+  CwdLook,
   Effort,
   Harnesses,
   MergeMethod,
   PipelineOptions,
   PipelineRun,
   PipelineToolInput,
+  PrState,
   RepoRef,
   Runs,
   Stage,
@@ -16,12 +18,14 @@ import type {
   StageModel,
   Tracker,
 } from '../types'
-import { currentBranch, detectHarnesses, repoRef } from './github'
+import { currentBranch, detectHarnesses, openPrOfCheckout, repoRef } from './github'
 
 /** Before one key per run, every run sat under this one key. */
 const LEGACY_STORE_KEY = 'runs'
 const RUN_PREFIX = 'run:'
 const POLL_PREFIX = 'poll:'
+const SESSION_PREFIX = 'session:'
+const PANE = 'pr-pipeline'
 
 export const runStoreKey = (key: string): string => `${RUN_PREFIX}${key}`
 
@@ -50,12 +54,19 @@ export const CLAUDE_MODELS = ['opus', 'sonnet', 'haiku', 'fable'] as const
 
 const DAY_MS = 86_400_000
 const HARNESS_TTL_MS = 10 * 60_000
+const SESSION_TTL_MS = 30 * DAY_MS
+const CWD_LOOK_MS = 5 * 60_000
+const TRUNKS = ['main', 'master']
 
 const runs = atom({ plugin: 'pr-pipeline', key: 'runs' } as const, {} as Runs)
 const selectedKey = atom({ plugin: 'pr-pipeline', key: 'selectedKey' } as const, null as string | null)
 const openStage = atom({ plugin: 'pr-pipeline', key: 'openStage' } as const, null as StageId | null)
 const harnesses = atom({ plugin: 'pr-pipeline', key: 'harnesses' } as const, null as Harnesses | null)
 const repos = atom({ plugin: 'pr-pipeline', key: 'repos' } as const, {} as Record<string, RepoRef | null>)
+const prStates = atom({ plugin: 'pr-pipeline', key: 'pr' } as const, {} as Record<string, PrState>)
+const sessionKeys = atom({ plugin: 'pr-pipeline', key: 'sessionKeys' } as const, [] as string[])
+const cwdLook = atom({ plugin: 'pr-pipeline', key: 'cwdLook' } as const, null as CwdLook | null)
+const openedByPerson = atom({ plugin: 'pr-pipeline', key: 'openedByPerson' } as const, false)
 
 /** `owner/name#branch`, the form `status` and the pane use. */
 const RUN_KEY = /^([\w.-]+\/[\w.-]+)#(.+)$/
@@ -111,19 +122,155 @@ export const freshRun = (key: string, now: number): PipelineRun => ({
 
 export const isOpenRun = (run: PipelineRun): boolean => run.closedAt === undefined
 
-/** The selected run while it is open, else the most recently updated open one. */
-export const pickedKey = (all: Runs, chosen: string | null): string | null => {
+/** What ties runs to this session: the keys it recorded to, and the run key of its cwd branch. */
+export type SessionScope = { keys: readonly string[]; cwdKey: string | null }
+
+export const isSessionKey = (key: string, scope: SessionScope): boolean => key === scope.cwdKey || scope.keys.includes(key)
+
+/** The selected run while it is open, whichever session it belongs to, else the session's most recently updated open run. */
+export const pickedKey = (all: Runs, chosen: string | null, scope: SessionScope): string | null => {
   if (chosen !== null && all[chosen] !== undefined && isOpenRun(all[chosen])) return chosen
   return Object.values(all)
-    .filter(isOpenRun)
+    .filter(run => isOpenRun(run) && isSessionKey(run.key, scope))
     .sort((a, b) => b.updatedAt - a.updatedAt)[0]?.key ?? null
 }
 
-/** Open runs of the repo `slug` names, ignoring case, most recently updated first. */
-export const openRunsInRepo = (all: Runs, slug: string): PipelineRun[] =>
-  Object.values(all)
-    .filter(run => isOpenRun(run) && (run.repo ?? repoOfKey(run.key))?.toLowerCase() === slug.toLowerCase())
-    .sort((a, b) => b.updatedAt - a.updatedAt)
+export async function sessionScope($: EngineInterface): Promise<SessionScope> {
+  return { keys: await read($, sessionKeys), cwdKey: (await read($, cwdLook))?.key ?? null }
+}
+
+export async function pickedKeyFor($: EngineInterface): Promise<string | null> {
+  return pickedKey(await read($, runs), await read($, selectedKey), await sessionScope($))
+}
+
+/** Whether the run's toasts belong to this session: it is session-related or on view. */
+export async function concernsSession($: EngineInterface, key: string): Promise<boolean> {
+  return isSessionKey(key, await sessionScope($)) || (await pickedKeyFor($)) === key
+}
+
+export const hasSessionRun = (all: Runs, scope: SessionScope): boolean =>
+  Object.values(all).some(run => isOpenRun(run) && isSessionKey(run.key, scope))
+
+async function sessionStoreKey($: EngineInterface): Promise<string | null> {
+  const id = await $.session.id().catch(() => null)
+  return id === null || id === '' ? null : `${SESSION_PREFIX}${id}`
+}
+
+/** Brings back the keys this session recorded before a restart, then drops the keys of sessions idle for a month. */
+export async function loadSessionKeys($: EngineInterface): Promise<void> {
+  await restoreSessionKeys($)
+  await pruneSessions($)
+}
+
+/** Restores the session's stored keys and writes them back, so a resumed session's entry is marked in use. */
+async function restoreSessionKeys($: EngineInterface): Promise<void> {
+  const storeKey = await sessionStoreKey($)
+  if (storeKey === null) return
+  const saved = await $.store.get(storeKey)
+  const keys = (saved as { keys?: unknown } | undefined)?.keys
+  if (!Array.isArray(keys)) return
+  const known = keys.filter((key): key is string => typeof key === 'string')
+  let merged: string[] = []
+  await update($, sessionKeys, current => {
+    merged = [...new Set([...current, ...known])]
+    return merged
+  })
+  await saveSessionKeys($, merged)
+}
+
+async function saveSessionKeys($: EngineInterface, keys: string[]): Promise<void> {
+  const storeKey = await sessionStoreKey($)
+  if (storeKey === null) return
+  await $.store.set(storeKey, { keys, at: await $.clock.now() })
+}
+
+export async function openPane($: EngineInterface): Promise<void> {
+  await $.ui.open({ id: PANE, title: 'PR pipeline' })
+}
+
+/** Ties the key to this session, opening the pane when an open run first becomes the session's; true when it opened it. */
+export async function addSessionKey($: EngineInterface, key: string): Promise<boolean> {
+  const scope = await sessionScope($)
+  if (scope.keys.includes(key)) return false
+  let keys: string[] = []
+  await update($, sessionKeys, current => {
+    keys = current.includes(key) ? current : [...current, key]
+    return keys
+  })
+  await saveSessionKeys($, keys)
+  const run = (await read($, runs))[key]
+  if (key === scope.cwdKey || run === undefined || !isOpenRun(run)) return false
+  void openPane($).catch(() => undefined)
+  return true
+}
+
+/** Closes the pane once the session has no open run left, unless the person opened it or picked a run. */
+export async function closePaneIfIdle($: EngineInterface): Promise<void> {
+  if (await read($, openedByPerson)) return
+  if (hasSessionRun(await read($, runs), await sessionScope($))) return
+  if ((await pickedKeyFor($)) !== null) return
+  await $.ui.close({ id: PANE }).catch(() => undefined)
+}
+
+/** The key a run of `slug` and `branch` has, in the casing a stored run already uses. */
+export async function runKeyOf($: EngineInterface, slug: string | null, branch: string): Promise<string> {
+  if (slug === null) return runKey(null, branch)
+  return runKey(canonicalSlug(slug, await read($, runs), null), branch)
+}
+
+export type WatchedPr = { prUrl: string; repo?: string; host?: string; cwd?: string }
+
+/**
+ * Follows a PR without a pipeline run: the one exception to "only `start` creates a run".
+ * A missing or closed entry becomes a PR-only one; an open run only gains the PR when it has none.
+ */
+export async function watchPr($: EngineInterface, key: string, pr: WatchedPr): Promise<PipelineRun> {
+  await followStoreOnce($)
+  const previous = (await read($, runs))[key]
+  if (previous !== undefined && isOpenRun(previous)) {
+    return changeRun($, key, run => (run.prUrl === undefined ? { ...run, prUrl: pr.prUrl } : run), { touch: false })
+  }
+  const now = await $.clock.now()
+  await update($, prStates, all => Object.fromEntries(Object.entries(all).filter(([known]) => known !== key)))
+  return changeRun($, key, () => ({
+    ...freshRun(key, now),
+    prUrl: pr.prUrl,
+    prOnly: true,
+    ...(pr.repo !== undefined ? { repo: pr.repo } : {}),
+    ...(pr.host !== undefined ? { host: pr.host } : {}),
+    ...(pr.cwd !== undefined ? { cwd: pr.cwd } : {}),
+  }), { create: true })
+}
+
+/**
+ * Reads the cwd branch's run key, at session start and on a turn once the branch moved or five minutes passed.
+ * A branch with no open run gets its open PR followed; a PR dismissed from the pane stays dismissed.
+ */
+export async function lookAtCwd($: EngineInterface, isStart: boolean): Promise<void> {
+  const now = await $.clock.now()
+  const previous = await read($, cwdLook)
+  const cwd = await $.session.cwd()
+  const branch = await currentBranch($, cwd)
+  const repo = await repoFor($, cwd)
+  const key = branch === null ? null : await runKeyOf($, repo?.slug ?? null, branch)
+  if (!isStart && previous !== null && previous.key === key && now - previous.at < CWD_LOOK_MS) return
+  const wasRelated = key !== null && isSessionKey(key, await sessionScope($))
+  await update($, cwdLook, () => ({ key, at: now }))
+  const all = await read($, runs)
+  if (isStart && hasSessionRun(all, await sessionScope($))) await openPane($)
+  if (key === null || branch === null) return
+  const existing = all[key]
+  if (existing !== undefined && isOpenRun(existing)) {
+    if (!isStart && !wasRelated) await openPane($)
+    return
+  }
+  if (TRUNKS.includes(branch) || repo === null) return
+  const found = await openPrOfCheckout($, cwd)
+  if (found === null || found.headRefName !== branch || existing?.prUrl === found.url) return
+  await watchPr($, key, { prUrl: found.url, repo: repo.slug, host: repo.host, cwd })
+  await addSessionKey($, key)
+  await openPane($)
+}
 
 export async function repoFor($: EngineInterface, cwd: string): Promise<RepoRef | null> {
   const cache = await read($, repos)
@@ -162,7 +309,7 @@ export async function resolveRun(
   }
   const branch = input.branch ?? (await currentBranch($, cwd))
   if (branch === null) {
-    const chosen = options.fromPane ? pickedKey(all, await read($, selectedKey)) : null
+    const chosen = options.fromPane ? await pickedKeyFor($) : null
     return chosen === null ? null : { key: chosen, repo, cwd }
   }
   const key = runKey(repo?.slug ?? null, branch)
@@ -190,6 +337,13 @@ export async function rekeyRun($: EngineInterface, from: string, to: string, rep
   })
   if (moved === undefined) return false
   await update($, selectedKey, chosen => (chosen === from ? to : chosen))
+  await update($, cwdLook, look => (look?.key === from ? { ...look, key: to } : look))
+  const keys = await read($, sessionKeys)
+  if (keys.includes(from)) {
+    const renamed = keys.map(key => (key === from ? to : key))
+    await update($, sessionKeys, () => renamed)
+    await saveSessionKeys($, renamed)
+  }
   await writeRun($, moved)
   await forgetRun($, from)
   return true
@@ -222,13 +376,15 @@ export async function changeRun(
   return changed
 }
 
-/** Moves the selection off a closed run, to the most recently updated open one; the stage detail and status line belong to the viewed run only. */
+/** Moves the selection off a closed run, to the session's most recently updated open one; the stage detail and status line belong to the viewed run only. */
 export async function closeRun($: EngineInterface, key: string): Promise<PipelineRun> {
-  const viewed = pickedKey(await read($, runs), await read($, selectedKey))
+  const viewed = await pickedKeyFor($)
   const now = await $.clock.now()
   const closed = await changeRun($, key, run => ({ ...run, closedAt: run.closedAt ?? now }), { touch: false })
   const all = await read($, runs)
-  await update($, selectedKey, chosen => (chosen === key || chosen === null ? pickedKey(all, null) : chosen))
+  const scope = await sessionScope($)
+  await update($, selectedKey, chosen => (chosen === key || chosen === null ? pickedKey(all, null, scope) : chosen))
+  if (isSessionKey(key, scope)) await closePaneIfIdle($)
   if (viewed !== key) return closed
   await update($, openStage, () => null)
   $.ui.status(undefined)
@@ -331,7 +487,40 @@ export async function loadRuns($: EngineInterface): Promise<void> {
 export async function followStoreOnce($: EngineInterface): Promise<void> {
   const changes = await readStoreChanges($)
   if (changes === null) return
+  const before = await read($, runs)
+  const viewed = await pickedKeyFor($)
   await update($, runs, local => mergeRuns(local, changes))
+  await noticeClosedElsewhere($, before, viewed)
+}
+
+/** Does for the session's runs another session closed what `closeRun` does here: toast, move the selection, close an idle pane. */
+async function noticeClosedElsewhere($: EngineInterface, before: Runs, viewed: string | null): Promise<void> {
+  const after = await read($, runs)
+  const scope = await sessionScope($)
+  const closed = Object.values(before).filter(run => {
+    const merged = after[run.key]
+    return isOpenRun(run) && isSessionKey(run.key, scope) && merged !== undefined && !isOpenRun(merged)
+  })
+  if (closed.length === 0) return
+  const closedKeys = closed.map(run => run.key)
+  closed.forEach(run => void $.ui.toast(`Run ${run.ticket ?? run.branch} closed`))
+  await update($, selectedKey, chosen => (chosen !== null && closedKeys.includes(chosen) ? pickedKey(after, null, scope) : chosen))
+  if (viewed !== null && closedKeys.includes(viewed)) {
+    await update($, openStage, () => null)
+    $.ui.status(undefined)
+  }
+  await closePaneIfIdle($)
+}
+
+/** Drops the run keys of sessions that recorded nothing for a month. */
+async function pruneSessions($: EngineInterface): Promise<void> {
+  const now = await $.clock.now()
+  for (const storeKey of await $.store.keys()) {
+    if (!storeKey.startsWith(SESSION_PREFIX)) continue
+    const at = ((await $.store.get(storeKey)) as { at?: unknown } | undefined)?.at
+    if (typeof at === 'number' && now - at <= SESSION_TTL_MS) continue
+    await $.store.delete(storeKey)
+  }
 }
 
 export async function pruneStore($: EngineInterface): Promise<void> {

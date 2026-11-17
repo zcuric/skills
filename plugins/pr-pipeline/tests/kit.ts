@@ -47,10 +47,12 @@ export type Booted = {
   statuses: Array<string | undefined>
   /** Pane ids `$.ui.open` was called with */
   opened: string[]
+  /** Pane ids `ui.close` was raised for */
+  closed: string[]
   tools: Array<{ name: string; isDeferred?: boolean }>
 }
 
-export function boot(on: On, routes: readonly Route[] = [], options: { now?: number; cwd?: string; configDeny?: string; configPrefix?: string | null } = {}): Booted {
+export function boot(on: On, routes: readonly Route[] = [], options: { now?: number; cwd?: string; configDeny?: string; configPrefix?: string | null; sessionId?: string } = {}): Booted {
   const clock = mock.clock(on, { now: options.now ?? 1_000_000 })
   mock.env(on, { PATH: '/usr/bin', HOME: '/home/dev' })
   const prompts: string[] = []
@@ -58,9 +60,11 @@ export function boot(on: On, routes: readonly Route[] = [], options: { now?: num
   const toasts: string[] = []
   const statuses: Array<string | undefined> = []
   const opened: string[] = []
+  const closed: string[] = []
   const tools: Array<{ name: string; isDeferred?: boolean }> = []
   on('session.start', (_$, e) => ({ cwd: e.cwd }))
   on('session.cwd', () => ({ value: options.cwd ?? '/repo' }))
+  on('session.id', () => ({ value: options.sessionId ?? 'session-1' }))
   on('command.register', (_$, e) => ({ value: { command: e.name } }))
   on('tool.register', (_$, e) => {
     tools.push({ name: e.name, isDeferred: e.isDeferred })
@@ -69,6 +73,10 @@ export function boot(on: On, routes: readonly Route[] = [], options: { now?: num
   on('ui.open', (_$, e) => {
     opened.push(e.id)
     return { value: { isPlaced: true as const } }
+  })
+  on('ui.close', (_$, e) => {
+    closed.push(e.id)
+    return { value: undefined }
   })
   on('ui.status', (_$, e) => {
     statuses.push(e.text)
@@ -98,11 +106,18 @@ export function boot(on: On, routes: readonly Route[] = [], options: { now?: num
     return { value: e.value }
   })
   const calls = fakeProcess(on, [...routes, ...REPO_ROUTES])
-  return { clock, calls, prompts, configs, toasts, statuses, opened, tools }
+  return { clock, calls, prompts, configs, toasts, statuses, opened, closed, tools }
 }
 
 export const ran = (calls: string[][], ...prefix: string[]): string[][] =>
   calls.filter(argv => prefix.every((part, at) => argv[at] === part))
+
+/** `gh pr view` with no PR named: the lookup of the open PR of the checkout's branch. */
+export const isPrLookup = (argv: readonly string[]): boolean =>
+  argv[0] === 'gh' && argv[1] === 'pr' && argv[2] === 'view' && (argv[3] === undefined || argv[3].startsWith('-'))
+
+/** `gh pr view` calls that fetch a named PR. */
+export const prFetches = (calls: string[][]): string[][] => ran(calls, 'gh', 'pr', 'view').filter(argv => !isPrLookup(argv))
 
 export const PR_URL = 'https://github.com/o/r/pull/42'
 

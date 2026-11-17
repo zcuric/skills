@@ -21,7 +21,9 @@ claude plugin update pr-pipeline@zcuric
 
 ## What you see
 
-- **Runs switcher** with the repo, branch and current stage of every run, then the run header with ticket, tracker and repo, and the confidence and merge-risk lights. A run follows its branch through `git checkout -b`, `git switch -c` and `git branch -m`.
+- **This session's run**: the run of the checked-out branch, or one this session started, recorded to or opened a PR for. With two or more, a Runs card lists them with repo, branch and current stage. Runs from other sessions sit behind a collapsed `Other open runs · N` row; press one to look at it. Then the run header with ticket, tracker and repo, and the confidence and merge-risk lights. A run follows its branch through `git checkout -b`, `git switch -c` and `git branch -m`.
+- **PR without a run**: when the checked-out branch has an open PR, or the session creates one for another branch or repo, the pane follows that PR with just the Pull request and Threads cards, a `Run pipeline on this PR` button and Dismiss.
+- **When the pane shows**: it opens when the session has a run or a followed PR, and closes when the session's last one closes, unless you opened it yourself with `/pipeline`. A session with neither gets no pane.
 - **Stages header**: stages done, and when the run last updated (its total time once every stage has finished). A run with a stage running and no update for 30 minutes shows "Stalled at <stage>" under Needs attention.
 - **Pull request card**: checks, review decision and reviewers, mergeability, and the Merge button once checks, review and risk allow it.
 - **Threads card**: unresolved review threads with their diff hunk, a reply box, Resolve, and Fix (hands the thread to the pipeline).
@@ -151,7 +153,7 @@ The skills follow the same rule: they read checks and threads through the pane's
 
 ## When the PR merges
 
-The run closes itself and leaves the Runs switcher: five minutes after the pane sees the PR merged, as soon as it sees the PR closed without merge, after 3 idle days without a PR, or after 14 idle days with one. Press Close to put a run away sooner, merged or not. With no open run, the pane shows the last closed one with a Reopen button.
+The run closes itself and leaves the pane's run lists: five minutes after the pane sees the PR merged, as soon as it sees the PR closed without merge, after 3 idle days without a PR, or after 14 idle days with one. Press Close to put a run away sooner, merged or not. With no open run of its own, the pane shows the session's last closed run with a Reopen button.
 
 ## Reviewer backends
 

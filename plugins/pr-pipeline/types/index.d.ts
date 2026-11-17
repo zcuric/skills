@@ -165,8 +165,10 @@ export type PipelineRun = {
   mergeMethod?: MergeMethod
   /** Set when the PR was first seen MERGED; the run closes itself five minutes later */
   mergedAt?: number
-  /** Closed runs leave the Runs switcher; status still returns them */
+  /** Closed runs leave the pane's run lists; status still returns them */
   closedAt?: number
+  /** A PR followed without a pipeline run; `start` turns it into a run */
+  prOnly?: true
   stages: Stage[]
   /** Set by the first start or stage write */
   startedAt?: number
@@ -176,6 +178,9 @@ export type PipelineRun = {
 }
 
 export type Runs = Record<string, PipelineRun>
+
+/** The run key of the branch checked out in the session's cwd (null when detached), and when it was last read */
+export type CwdLook = { key: string | null; at: number }
 
 /** The thread whose reply box is open, on which run, and since when */
 export type ReplyBox = { key: string; threadId: string; openedAt: number }
@@ -217,6 +222,14 @@ declare module 'claude-code' {
       /** Settings picks waiting for the reloaded options to carry them */
       settingsPending: PendingSettings
       showResolved: boolean
+      /** Run keys this session recorded to, opened a PR for or found a PR for; kept in the store under `session:<id>` */
+      sessionKeys: string[]
+      /** The cwd branch's run key at the last look; its run belongs to the session too */
+      cwdLook: CwdLook | null
+      /** Whether the pane lists other sessions' open runs */
+      showOtherRuns: boolean
+      /** Set when the person opened the pane with a bare /pipeline; the pane then stays open with no run */
+      openedByPerson: boolean
     }
   }
 }

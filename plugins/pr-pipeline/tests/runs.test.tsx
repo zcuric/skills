@@ -271,6 +271,7 @@ test('the poll also refreshes the other run fetched longest ago, at most every t
   ])
   mock.store(on, {
     runs: { 'o/r#feature/other': { key: 'o/r#feature/other', branch: 'feature/other', repo: 'o/r', ticket: 'HWEPD-26', prUrl: 'https://github.com/o/r/pull/43', updatedAt: 1, stages: [] } },
+    'session:session-1': { keys: ['o/r#feature/other'], at: 1 },
   })
   await $.session.start(START)
   await $.tool.call({ tool: TOOL, action: 'start', branch: 'feature/selected', ticket: 'HWEPD-27', prUrl: PR_URL })
@@ -342,6 +343,7 @@ test('an idle run closes: 3 days without a PR, 14 days with one', async ($, on) 
       'o/r#pr-old': stored('pr-old', now - 14 * day, 'https://github.com/o/r/pull/43'),
       'o/r#pr-new': stored('pr-new', now - 13 * day, PR_URL),
     },
+    'session:session-1': { keys: ['o/r#no-pr-old', 'o/r#no-pr-new', 'o/r#pr-old', 'o/r#pr-new'], at: now },
   })
   await $.session.start(START)
   await clock.advance(60_000)
@@ -541,7 +543,7 @@ test('an open run is never pruned, however many runs there are; a closed one goe
   expect(shared['poll:o/r#feature/closed']).toBeUndefined()
 })
 
-test('the pane opens at session start only in a checkout of a repo with an open run', async ($, on) => {
+test('the pane opens at session start only when the session has an open run', async ($, on) => {
   const { clock, opened } = boot(on)
   sharedStore(on, {
     'run:x/other#feature/a': { key: 'x/other#feature/a', branch: 'feature/a', repo: 'x/other', updatedAt: 1, stages: [] },
@@ -556,11 +558,11 @@ test('the pane opens at session start only in a checkout of a repo with an open 
   expect(opened).toEqual(['pr-pipeline'])
 })
 
-test('the pane opens at session start on the latest open run of this repo, whatever its case', async ($, on) => {
+test('the pane opens at session start on the run of the checked-out branch, whatever its repo case', async ($, on) => {
   const { clock, opened } = boot(on)
   sharedStore(on, {
     'run:x/other#feature/a': { key: 'x/other#feature/a', branch: 'feature/a', repo: 'x/other', updatedAt: 9, stages: [] },
-    'run:O/R#feature/b': { key: 'O/R#feature/b', branch: 'feature/b', repo: 'O/R', ticket: 'HWEPD-41', updatedAt: 2, stages: [] },
+    'run:O/R#feature/current': { key: 'O/R#feature/current', branch: 'feature/current', repo: 'O/R', ticket: 'HWEPD-41', updatedAt: 2, stages: [] },
   })
   await $.session.start(START)
   await clock.settle()

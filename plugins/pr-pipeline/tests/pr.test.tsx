@@ -1,6 +1,6 @@
 import { expect, mock, test } from 'claude-code/testing'
 
-import { boot, PANE, PR_URL, prRoutes, prThread, prView, ran, sharedStore, START, TOOL } from './kit'
+import { boot, PANE, PR_URL, prFetches, prRoutes, prThread, prView, ran, sharedStore, START, TOOL } from './kit'
 import type { PrWorld, Route } from './kit'
 import { splitImages } from '../hooks/pane-pr'
 
@@ -169,7 +169,7 @@ test('polling pauses while a reply is open', async ($, on) => {
   await $.session.start(START)
   await $.tool.call({ tool: TOOL, action: 'start', branch: 'feature/poll', prUrl: PR_URL })
   await clock.advance(2_000)
-  const views = () => ran(calls, 'gh', 'pr', 'view').length
+  const views = () => prFetches(calls).length
   expect(views()).toBe(1)
 
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
@@ -189,7 +189,7 @@ test('a review-stage transition schedules a PR refresh two seconds later', async
   await $.session.start(START)
   await $.tool.call({ tool: TOOL, action: 'start', branch: 'feature/transition', prUrl: PR_URL })
   await clock.advance(2_000)
-  const views = () => ran(calls, 'gh', 'pr', 'view').length
+  const views = () => prFetches(calls).length
   expect(views()).toBe(1)
 
   await $.tool.call({ tool: TOOL, action: 'stage', branch: 'feature/transition', stage: 'review', status: 'running' })
@@ -236,15 +236,16 @@ test('comment images become links and HTML links become markdown', () => {
 })
 
 const RUN_KEY = 'o/r#feature/polled'
+const SESSION_OWNS_RUN = { 'session:session-1': { keys: [RUN_KEY], at: 1_000_000 } }
 const storedRun = (overrides: Record<string, unknown> = {}) => ({
   key: RUN_KEY, branch: 'feature/polled', repo: 'o/r', prUrl: PR_URL, updatedAt: 1_000_000, stages: [], ...overrides,
 })
 
 test('a session does not fetch a PR another session fetched within 55 s', async ($, on) => {
   const { calls, clock } = boot(on, prRoutes({ view: prView(), threads: [] }))
-  const shared = sharedStore(on, { [`run:${RUN_KEY}`]: storedRun(), [`poll:${RUN_KEY}`]: 1_000_000 })
+  const shared = sharedStore(on, { [`run:${RUN_KEY}`]: storedRun(), [`poll:${RUN_KEY}`]: 1_000_000, ...SESSION_OWNS_RUN })
   await $.session.start(START)
-  const views = () => ran(calls, 'gh', 'pr', 'view').length
+  const views = () => prFetches(calls).length
 
   await clock.advance(30_000)
   shared[`poll:${RUN_KEY}`] = clock.now()
@@ -265,9 +266,9 @@ test('a session does not fetch a PR another session fetched within 55 s', async 
 test('a run with its proof done and no pending check polls every five minutes', async ($, on) => {
   const world: PrWorld = { view: prView(), threads: [] }
   const { calls, clock } = boot(on, prRoutes(world))
-  sharedStore(on, { [`run:${RUN_KEY}`]: storedRun({ stages: [{ id: 'proof', status: 'done' }] }) })
+  sharedStore(on, { [`run:${RUN_KEY}`]: storedRun({ stages: [{ id: 'proof', status: 'done' }] }), ...SESSION_OWNS_RUN })
   await $.session.start(START)
-  const views = () => ran(calls, 'gh', 'pr', 'view').length
+  const views = () => prFetches(calls).length
 
   await clock.advance(60_000)
   expect(views()).toBe(1)
@@ -295,7 +296,7 @@ test('a reply box open on one run does not hold back polling of another', async 
   await $.tool.call({ tool: TOOL, action: 'start', branch: 'feature/a', prUrl: PR_URL })
   await $.tool.call({ tool: TOOL, action: 'start', branch: 'feature/b', prUrl: 'https://github.com/o/r/pull/43' })
   await clock.advance(2_000)
-  const viewsOf = (number: string) => ran(calls, 'gh', 'pr', 'view').filter(argv => argv.includes(number)).length
+  const viewsOf = (number: string) => prFetches(calls).filter(argv => argv.includes(number)).length
 
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
   await ui.press({ key: 'run:o/r#feature/a' })
@@ -316,7 +317,7 @@ test('a reply box holds back its run for ten minutes at most, scheduled refreshe
   await $.session.start(START)
   await $.tool.call({ tool: TOOL, action: 'start', branch: 'feature/held', prUrl: PR_URL })
   await clock.advance(2_000)
-  const views = () => ran(calls, 'gh', 'pr', 'view').length
+  const views = () => prFetches(calls).length
   expect(views()).toBe(1)
 
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })

@@ -419,6 +419,25 @@ export async function prHeadSha($: EngineInterface, pr: PrRef, cwd?: string): Pr
   return sha === '' ? null : sha
 }
 
+/** The PR's head branch, or null when gh cannot say. */
+export async function prHeadRef($: EngineInterface, pr: PrRef, cwd?: string): Promise<string | null> {
+  const view = await gh($, ['pr', 'view', prPageUrl(pr), '--json', 'headRefName'], ghOptions(pr, cwd))
+  if (!view.ok) return null
+  const head = str(asRecord(parseJson(view.stdout)).headRefName)
+  return head === '' ? null : head
+}
+
+/** The open PR of the branch checked out in `cwd`, or null when it has none or gh cannot say. */
+export async function openPrOfCheckout($: EngineInterface, cwd: string): Promise<{ url: string; headRefName: string } | null> {
+  const view = await gh($, ['pr', 'view', '--json', 'url,state,headRefName'], { cwd })
+  if (!view.ok) return null
+  const record = asRecord(parseJson(view.stdout))
+  const url = str(record.url)
+  const headRefName = str(record.headRefName)
+  if (record.state !== 'OPEN' || parsePrUrl(url) === null || headRefName === '') return null
+  return { url, headRefName }
+}
+
 export async function mergePr($: EngineInterface, pr: PrRef, method: MergeMethod, cwd?: string): Promise<GhResult> {
   return gh($, ['pr', 'merge', String(pr.number), '--repo', pr.slug, `--${method}`], ghOptions(pr, cwd))
 }

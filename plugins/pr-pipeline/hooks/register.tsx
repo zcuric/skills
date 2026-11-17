@@ -1,5 +1,5 @@
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, Register } from 'claude-code'
+import type { Elements, EngineInterface, Register, RenderSurface } from 'claude-code'
 
 import type { PipelineOptions, PipelineRun, PipelineToolInput, PrSnapshot, PrState, RepoRef, Runs, Stage, StageId } from '../types'
 import { chip, confidenceTone, gauge, INK, isGraphic, pulse, RISK_TONE, STATUS_TONE, tint, track } from './look'
@@ -8,8 +8,8 @@ import { card, duration, elapsed, isHuman, isSettingsOpen, prCard, settingsGear,
 import type { PaneContext, PaneEvent } from './pane-pr'
 import { deltaReviewPrompt, failingRunIds, fixCiPrompt, heldKey, isPollDue, prRefOf, refreshPr, staleVerdictText, syncPrompt, tick } from './pr'
 import {
-  STAGES, closeRun, ensureHarnesses, followStoreOnce, isOpenRun, loadRuns, modelChip, openRunsInRepo, pickedKey, pipelineOptions,
-  liveOptions, reopenRun, repoFor, runConfidence, stageLabel,
+  STAGES, closeRun, ensureHarnesses, followStoreOnce, isOpenRun, isSessionKey, liveOptions, loadRuns, loadSessionKeys, lookAtCwd, modelChip,
+  pickedKeyFor, pipelineOptions, reopenRun, runConfidence, sessionScope, stageLabel,
 } from './runs'
 import { ARGUMENT_HINT, classifyTicket } from './ticket'
 import { afterBash, branchMoveBefore, handleTool, INPUT_SCHEMA, TOOL_DESCRIPTION } from './tool'
@@ -19,6 +19,8 @@ const selectedKey = atom({ plugin: 'pr-pipeline', key: 'selectedKey' } as const,
 const openStage = atom({ plugin: 'pr-pipeline', key: 'openStage' } as const, null as StageId | null)
 const prStates = atom({ plugin: 'pr-pipeline', key: 'pr' } as const, {} as Record<string, PrState>)
 const repos = atom({ plugin: 'pr-pipeline', key: 'repos' } as const, {} as Record<string, RepoRef | null>)
+const showOtherRuns = atom({ plugin: 'pr-pipeline', key: 'showOtherRuns' } as const, false)
+const openedByPerson = atom({ plugin: 'pr-pipeline', key: 'openedByPerson' } as const, false)
 
 const PANE = 'pr-pipeline'
 const TOOL = 'mcp__pr-pipeline__pipeline'
@@ -27,6 +29,7 @@ const CHANGES_REQUESTED = /changes[\s_-]*requested|request(ed|s)?[\s_-]+changes/
 const STALL_MS = 30 * 60_000
 
 type Attention = { key: string; text: string; tone: Tone; onPress?: () => unknown }
+type Els = Elements[RenderSurface]
 
 const unmetCount = (stage: Stage): number => stage.criteria.filter(one => one.met !== 'yes').length
 
@@ -35,29 +38,21 @@ const requestsChanges = (stage: Stage): boolean => stage.id === 'review' && CHAN
 
 async function refreshIfStale($: EngineInterface): Promise<void> {
   const all = await read($, runs)
-  const key = pickedKey(all, await read($, selectedKey))
+  const key = await pickedKeyFor($)
   const run = key === null ? undefined : all[key]
   const now = await $.clock.now()
   if (run === undefined || run.key === (await heldKey($, now)) || !(await isPollDue($, run, now))) return
   await refreshPr($, run.key, { reason: 'turn' })
 }
 
+/** Opens the pane only when the session has an open run or a followed PR. */
 async function startSession($: EngineInterface): Promise<void> {
   await loadRuns($)
+  await loadSessionKeys($)
   $.clock.every(60_000, () => void tick($).catch(err => $.ui.toast(String(err))))
   $.clock.every(10_000, () => void followStoreOnce($).catch(err => $.ui.toast(String(err))))
   void ensureHarnesses($).catch(err => $.ui.toast(String(err)))
-}
-
-/** Opens the pane only in a checkout of a repo with an open run, selecting its latest run. */
-async function openPaneForRepo($: EngineInterface): Promise<void> {
-  const all = await read($, runs)
-  if (!Object.values(all).some(isOpenRun)) return
-  const repo = await repoFor($, await $.session.cwd())
-  const match = repo === null ? undefined : openRunsInRepo(all, repo.slug)[0]
-  if (match === undefined) return
-  await update($, selectedKey, chosen => chosen ?? match.key)
-  await $.ui.open({ id: PANE, title: 'PR pipeline' })
+  void lookAtCwd($, true).catch(err => $.ui.toast(String(err)))
 }
 
 function prAttention($: EngineInterface, run: PipelineRun, snapshot: PrSnapshot | undefined): Attention[] {
@@ -87,7 +82,7 @@ function currentStageId(run: PipelineRun): StageId | undefined {
     ?? run.stages.find(stage => stage.status === 'pending'))?.id
 }
 
-/** `◐ AI review`, `✕ Address`, `● done` for a Runs switcher row. */
+/** `◐ AI review`, `✕ Address`, `● done` for a run row. */
 function runBrief(run: PipelineRun): { text: string; tone: Tone } {
   const current = run.stages.find(stage => stage.id === currentStageId(run))
   if (current === undefined) return { text: `${STATUS_GLYPH.done} done`, tone: 'good' }
@@ -96,20 +91,106 @@ function runBrief(run: PipelineRun): { text: string; tone: Tone } {
 
 const runName = (run: PipelineRun): string => run.ticket ?? run.title ?? run.branch
 
+function runRows($: EngineInterface, els: Els, list: PipelineRun[], picked: string | null, cwdRepo: string | undefined) {
+  const { Box, Text, Button } = els
+  return list.map(one => {
+    const brief = one.prOnly ? { text: 'PR only', tone: 'muted' as Tone } : runBrief(one)
+    const isPicked = one.key === picked
+    return (
+      <Box key={`runRow:${one.key}`} flexDirection="row" paddingX={1}
+        backgroundColor={isPicked ? tint(els, 'info', 0.12) : undefined} hover={{ backgroundColor: tint(els, 'info', 0.08) }}>
+        <Button key={`run:${one.key}`} plain onPress={() => update($, selectedKey, () => one.key).then(() => update($, openStage, () => null))}>
+          <Text color={isPicked ? INK.info : undefined} dimColor={!isPicked}>{isPicked ? '● ' : '○ '}</Text>
+          <Text weight={one.repo !== undefined && one.repo === cwdRepo ? 'bold' : 'regular'} dimColor={!isPicked}>
+            {`${one.repo ?? 'unknown'} · ${one.branch}`}
+          </Text>
+          <Text dimColor mono>{one.ticket ? `  ${one.ticket}` : ''}</Text>
+          <Text color={brief.tone === 'muted' ? undefined : INK[brief.tone]} dimColor={brief.tone === 'muted'}>{`  ${brief.text}`}</Text>
+        </Button>
+      </Box>
+    )
+  })
+}
+
+/** Other sessions' open runs, behind a row that starts collapsed. */
+async function otherRunsBlock($: EngineInterface, els: Els, others: PipelineRun[], picked: string | null, cwdRepo: string | undefined) {
+  if (others.length === 0) return null
+  const { Box, Button } = els
+  const isShown = await read($, showOtherRuns)
+  return (
+    <Box key="others" flexDirection="column" rowGap={0}>
+      <Button key="others:toggle" plain dimColor label={`${isShown ? '▾' : '▸'} Other open runs · ${others.length}`}
+        onPress={() => update($, showOtherRuns, shown => !shown)} />
+      {isShown ? runRows($, els, others, picked, cwdRepo) : null}
+    </Box>
+  )
+}
+
+function attentionStrip(els: Els, attention: Attention[]) {
+  if (attention.length === 0) return null
+  const { Box, Text, Button } = els
+  const attentionTone: Tone = attention.some(item => item.tone === 'bad') ? 'bad' : 'warn'
+  return (
+    <Box key="attention" flexDirection="column" rowGap={0} paddingX={2} paddingY={1}
+      borderStyle="round" borderColor={INK[attentionTone]} backgroundColor={tint(els, attentionTone, 0.1)}>
+      <Text size="caption" weight="bold" color={INK[attentionTone]}>{`⚠ NEEDS ATTENTION · ${attention.length}`}</Text>
+      {attention.map(item => {
+        const text = <Text color={INK[item.tone]} weight={item.tone === 'bad' ? 'semibold' : 'regular'}>{item.text}</Text>
+        const dot = <Text key="dot" color={INK[item.tone]}>{'• '}</Text>
+        if (item.onPress === undefined) return <Box key={`${item.key}:row`} flexDirection="row">{dot}<Text key={item.key} color={INK[item.tone]}>{item.text}</Text></Box>
+        return (
+          <Box key={`${item.key}:row`} flexDirection="row" hover={{ backgroundColor: tint(els, item.tone, 0.12) }}>
+            {dot}
+            <Button key={item.key} plain onPress={item.onPress}>{text}</Button>
+          </Box>
+        )
+      })}
+    </Box>
+  )
+}
+
+/** A PR followed without a pipeline run: its header, PR and threads, and no stages. */
+function prOnlyHeader($: EngineInterface, els: Els, ctx: PaneContext) {
+  const { Box, Text, Button, Link } = els
+  const { key, run, options } = ctx
+  const prNumber = prRefOf(run)?.number
+  const prUrl = run.prUrl
+  return card(els, 'run', [
+    <Box key="run:top" flexDirection="column" flexShrink={1} minWidth={0}>
+      <Text key="run:title" size="title" weight="bold" wrap="wrap">{run.title ?? run.pr?.title ?? run.branch}</Text>
+      <Text key="run:where" mono size="footnote" dimColor wrap="truncate-middle">{`${run.repo ?? 'unknown'} · ${run.branch}`}</Text>
+    </Box>,
+    <Box key="run:badges" flexDirection="row" flexWrap="wrap" justifyContent="space-between" alignItems="center" gap={1}>
+      {prUrl !== undefined && prNumber !== undefined ? <Link href={prUrl} label={`PR #${prNumber}`} /> : null}
+      <Box flexDirection="row" alignItems="center" gap={1}>
+        {prUrl !== undefined
+          ? <Button key="run:pipeline" plain label="Run pipeline on this PR" onPress={() => submitPrompt($, classifyTicket(prUrl, options.tracker).prompt)} />
+          : null}
+        <Button key="run:dismiss" plain dimColor label="Dismiss" onPress={() => void closeRun($, key).catch(err => $.ui.toast(String(err)))} />
+      </Box>
+    </Box>,
+  ])
+}
+
 async function renderPane($: EngineInterface, e: PaneEvent, options: PipelineOptions) {
   const els = $.ui.resolve(e)
   const { Box, Text, Button, Link } = els
   const all = await read($, runs)
-  const key = pickedKey(all, await read($, selectedKey))
+  const key = await pickedKeyFor($)
   const open = await read($, openStage)
   const now = await $.clock.now()
   const run = key === null ? undefined : all[key]
   const openTo = (id: StageId | null) => () => update($, openStage, () => id)
+  const scope = await sessionScope($)
+  const cwdRepo = (await read($, repos))[await $.session.cwd()]?.slug
+  const openRuns = Object.values(all).filter(isOpenRun).sort((a, b) => b.updatedAt - a.updatedAt)
+  const sessionRuns = openRuns.filter(one => isSessionKey(one.key, scope))
+  const others = await otherRunsBlock($, els, openRuns.filter(one => !isSessionKey(one.key, scope)), key, cwdRepo)
 
   if (await isSettingsOpen($)) return settingsView($, e, options, run)
   if (key === null || run === undefined) {
     const last = Object.values(all)
-      .filter(one => one.closedAt !== undefined)
+      .filter(one => one.closedAt !== undefined && isSessionKey(one.key, scope))
       .sort((a, b) => (b.closedAt ?? 0) - (a.closedAt ?? 0))[0]
     const lastLine = last === undefined ? '' : `${runName(last)}${last.mergedAt !== undefined ? ' merged ·' : ''} closed ${duration(now - (last.closedAt ?? now))} ago`
     return (
@@ -125,34 +206,32 @@ async function renderPane($: EngineInterface, e: PaneEvent, options: PipelineOpt
             </Box>
           ),
         ])}
+        {others}
       </Box>
     )
   }
   const ctx: PaneContext = { key, run, now, options }
-  const cwdRepo = (await read($, repos))[await $.session.cwd()]?.slug
   const snapshot = (await read($, prStates))[key]?.snapshot
   const currentId = currentStageId(run)
   const confidence = runConfidence(run)
-  const openRuns = Object.values(all).filter(isOpenRun).sort((a, b) => b.updatedAt - a.updatedAt)
   const prNumber = prRefOf(run)?.number
 
-  const switcher = openRuns.length < 2 ? null : card(els, 'runs', openRuns.map(one => {
-    const brief = runBrief(one)
-    const isPicked = one.key === key
+  const switcher = sessionRuns.length < 2 ? null : card(els, 'runs', runRows($, els, sessionRuns, key, cwdRepo),
+    { title: 'Runs', aside: chip(els, String(sessionRuns.length), 'muted'), gap: 0 })
+
+  if (run.prOnly) {
     return (
-      <Box key={`runRow:${one.key}`} flexDirection="row" paddingX={1}
-        backgroundColor={isPicked ? tint(els, 'info', 0.12) : undefined} hover={{ backgroundColor: tint(els, 'info', 0.08) }}>
-        <Button key={`run:${one.key}`} plain onPress={() => update($, selectedKey, () => one.key).then(openTo(null))}>
-          <Text color={isPicked ? INK.info : undefined} dimColor={!isPicked}>{isPicked ? '● ' : '○ '}</Text>
-          <Text weight={one.repo !== undefined && one.repo === cwdRepo ? 'bold' : 'regular'} dimColor={!isPicked}>
-            {`${one.repo ?? 'unknown'} · ${one.branch}`}
-          </Text>
-          <Text dimColor mono>{one.ticket ? `  ${one.ticket}` : ''}</Text>
-          <Text color={brief.tone === 'muted' ? undefined : INK[brief.tone]} dimColor={brief.tone === 'muted'}>{`  ${brief.text}`}</Text>
-        </Button>
+      <Box flexDirection="column" rowGap={1} paddingX={1} paddingY={1}>
+        {settingsGear($, e)}
+        {switcher}
+        {others}
+        {prOnlyHeader($, els, ctx)}
+        {attentionStrip(els, prAttention($, run, snapshot))}
+        {await prCard($, e, ctx)}
+        {await threadsCard($, e, ctx)}
       </Box>
     )
-  }), { title: 'Runs', aside: chip(els, String(openRuns.length), 'muted'), gap: 0 })
+  }
 
   const closesIn = run.mergedAt === undefined ? 0 : Math.max(0, Math.ceil((run.mergedAt + 5 * 60_000 - now) / 60_000))
   const closeNow = () => void closeRun($, key).catch(err => $.ui.toast(String(err)))
@@ -216,24 +295,6 @@ async function renderPane($: EngineInterface, e: PaneEvent, options: PipelineOpt
     }),
     ...prAttention($, run, snapshot),
   ]
-  const attentionTone: Tone = attention.some(item => item.tone === 'bad') ? 'bad' : 'warn'
-  const attentionStrip = attention.length === 0 ? null : (
-    <Box key="attention" flexDirection="column" rowGap={0} paddingX={2} paddingY={1}
-      borderStyle="round" borderColor={INK[attentionTone]} backgroundColor={tint(els, attentionTone, 0.1)}>
-      <Text size="caption" weight="bold" color={INK[attentionTone]}>{`⚠ NEEDS ATTENTION · ${attention.length}`}</Text>
-      {attention.map(item => {
-        const text = <Text color={INK[item.tone]} weight={item.tone === 'bad' ? 'semibold' : 'regular'}>{item.text}</Text>
-        const dot = <Text key="dot" color={INK[item.tone]}>{'• '}</Text>
-        if (item.onPress === undefined) return <Box key={`${item.key}:row`} flexDirection="row">{dot}<Text key={item.key} color={INK[item.tone]}>{item.text}</Text></Box>
-        return (
-          <Box key={`${item.key}:row`} flexDirection="row" hover={{ backgroundColor: tint(els, item.tone, 0.12) }}>
-            {dot}
-            <Button key={item.key} plain onPress={item.onPress}>{text}</Button>
-          </Box>
-        )
-      })}
-    </Box>
-  )
 
   const isFinished = run.stages.every(stage => stage.status !== 'pending' && stage.status !== 'running')
   const lastFinish = Math.max(0, ...run.stages.map(stage => stage.finishedAt ?? 0))
@@ -293,8 +354,9 @@ async function renderPane($: EngineInterface, e: PaneEvent, options: PipelineOpt
     <Box flexDirection="column" rowGap={1} paddingX={1} paddingY={1}>
       {settingsGear($, e)}
       {switcher}
+      {others}
       {header}
-      {attentionStrip}
+      {attentionStrip(els, attention)}
       {await prCard($, e, ctx)}
       {await threadsCard($, e, ctx)}
       {card(els, 'stages', run.stages.map(stageRow), {
@@ -318,13 +380,13 @@ export const register: Register = (on, rawOptions) => {
     })
     await $.tool.register({ name: 'pipeline', description: TOOL_DESCRIPTION, isDeferred: true, inputSchema: INPUT_SCHEMA })
     await startSession($)
-    void openPaneForRepo($).catch(err => $.ui.toast(String(err)))
     return next(e)
   })
 
   on('command.run', { command: 'pipeline' }, async ($, e) => {
     const args = (e.args ?? '').trim()
     if (args === '') {
+      await update($, openedByPerson, () => true)
       await $.ui.open({ id: PANE, title: 'PR pipeline', focus: true })
       return { text: 'PR pipeline pane opened.' }
     }
@@ -349,7 +411,14 @@ export const register: Register = (on, rawOptions) => {
   }).catch((_$, e, next) => next(e))
 
   on('turn.complete', async ($, e, next) => {
-    if (e.agentId === undefined) void refreshIfStale($).catch(err => $.ui.toast(String(err)))
+    if (e.agentId !== undefined) return next(e)
+    void refreshIfStale($).catch(err => $.ui.toast(String(err)))
+    void lookAtCwd($, false).catch(err => $.ui.toast(String(err)))
+    return next(e)
+  })
+
+  on('ui.close', { id: PANE }, async ($, e, next) => {
+    if (e.origin.kind === 'person') await update($, openedByPerson, () => false)
     return next(e)
   })
 
