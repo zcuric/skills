@@ -248,24 +248,24 @@ async function renderPane($: EngineInterface, e: PaneEvent, options: PipelineOpt
     )
     : chip(els, confidenceLabel, confidenceTone(confidence), { key: 'run:confidence' })
   const header = card(els, 'run', [
-    <Box key="run:top" flexDirection="row" justifyContent="space-between" alignItems="flex-start" gap={2}>
-      <Box flexDirection="column" flexShrink={1} minWidth={0}>
-        {run.ticket !== undefined ? <Text key="run:ticket" mono size="footnote" weight="semibold" color={INK.info}>{run.ticket}</Text> : null}
-        <Text key="run:title" size="title" weight="bold" wrap="wrap">{run.title ?? run.branch}</Text>
-        <Text key="run:where" mono size="footnote" dimColor wrap="truncate-middle">{`${run.repo ?? 'unknown'} · ${run.tracker ?? 'no tracker'} · ${run.branch}`}</Text>
+    <Box key="run:top" flexDirection="column">
+      <Box flexDirection="row" flexWrap="wrap" justifyContent="space-between" alignItems="center" gap={1}>
+        {run.ticket !== undefined ? <Box flexShrink={0}><Text key="run:ticket" mono size="footnote" weight="semibold" color={INK.info}>{run.ticket}</Text></Box> : null}
+        {confidenceBadge}
       </Box>
-      {confidenceBadge}
+      <Text key="run:title" size="title" weight="bold" wrap="wrap">{run.title ?? run.branch}</Text>
+      <Text key="run:where" mono size="footnote" dimColor wrap="truncate-middle">{`${run.repo ?? 'unknown'} · ${run.tracker ?? 'no tracker'} · ${run.branch}`}</Text>
     </Box>,
     track(els, 'run:track', run.stages.map(stage => stage.status), `${doneCount} of ${STAGES.length} stages done`),
     <Box key="run:badges" flexDirection="row" flexWrap="wrap" justifyContent="space-between" alignItems="center" gap={1}>
-      <Box flexDirection="row" alignItems="center" gap={1}>
+      <Box flexDirection="row" alignItems="center" gap={1} flexShrink={0}>
         {run.risk ? chip(els, `Risk ${run.risk}`, RISK_TONE[run.risk], { key: 'run:risk' }) : chip(els, 'Risk —', 'muted', { key: 'run:risk' })}
         {run.tier ? chip(els, `Tier ${run.tier}`, 'info', { key: 'run:tier' }) : null}
         {run.prUrl && prNumber !== undefined ? <Link href={run.prUrl} label={`PR #${prNumber}`} /> : null}
       </Box>
       {run.mergedAt !== undefined
         ? (
-          <Box flexDirection="row" alignItems="center" gap={1}>
+          <Box flexDirection="row" alignItems="center" gap={1} flexShrink={0}>
             <Text color={INK.merged} weight="semibold">{`Merged · closes in ${closesIn} min`}</Text>
             <Button key="run:close" plain label="Close now" onPress={closeNow} />
           </Box>
