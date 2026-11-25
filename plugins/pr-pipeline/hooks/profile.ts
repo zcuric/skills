@@ -278,6 +278,8 @@ function withDefaults(given: Found, rest: { tracker?: Tracker }): RepoProfile {
     lint: given.lint ?? '',
     test: given.test ?? '',
     e2e: given.e2e ?? null,
+    design: given.design ?? null,
+    product: given.product ?? null,
     e2ePolicy: given.e2ePolicy ?? 'auto',
     securityAgent: given.securityAgent ?? null,
     threatModel: given.threatModel ?? null,

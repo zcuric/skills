@@ -236,6 +236,9 @@ declare module 'claude-code' {
   }
 }
 
+/** How much a status, pr or profile answer carries */
+export type Detail = 'summary' | 'threads' | 'full' | 'guard'
+
 export type PipelineAction =
   | 'start' | 'stage' | 'link' | 'unlink' | 'status' | 'pr' | 'pr-reply' | 'pr-resolve' | 'settings' | 'profile' | 'close'
 
@@ -263,6 +266,10 @@ export type RepoProfile = {
   lint: string
   test: string
   e2e: string | null
+  /** Skill the stage-1 definition gate runs for a user-facing ticket with no design; null uses the built-in design pass */
+  design: string | null
+  /** Skill the stage-1 definition gate runs for a ticket without a product definition; null uses the built-in product exploration */
+  product: string | null
   e2ePolicy: 'auto' | 'always' | 'never'
   securityAgent: string | null
   threatModel: string | null
@@ -287,9 +294,9 @@ export type PipelineToolInput = {
   stage?: StageId
   status?: StageStatus
   summary?: string
-  did?: string
-  flag?: string
-  note?: string
+  did?: string | string[]
+  flag?: string | string[]
+  note?: string | string[]
   criterion?: string
   met?: Met
   evidence?: string
@@ -304,6 +311,10 @@ export type PipelineToolInput = {
   /** pr-reply, pr-resolve */
   threadId?: string
   body?: string
+  /** pr-reply: resolve the thread after replying */
+  resolve?: boolean
+  /** status, pr: summary (default) or full; pr: threads; profile: guard */
+  detail?: Detail
   /** settings: fields to write through $.config.set */
   set?: PipelineSettingsPatch
   /** profile: write a discovered profile as .pr-pipeline.json */

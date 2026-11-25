@@ -42,6 +42,8 @@ test('profile reads .pr-pipeline.json, fills every default and creates the crite
       lint: 'make lint',
       test: 'make test',
       e2e: null,
+      design: null,
+      product: null,
       e2ePolicy: 'auto',
       securityAgent: null,
       threatModel: null,
@@ -298,4 +300,39 @@ test('branch pattern changes only when most recent heads share another shape', (
   expect(branchPatternOf(['feature/a-1-x', 'fix/a-2-y', 'feat/a-3-z'])).toBeUndefined()
   expect(branchPatternOf(['ABC-1/x', 'ABC-2/y', 'feature/abc-3-z'])).toBe('{key}/{slug}')
   expect(branchPatternOf(['feat/a'])).toBeUndefined()
+})
+
+test('profile detail guard answers only the guard fields and still stores what the run started with', async ($, on) => {
+  const changed = ['.github/workflows/ci.yml', 'app/Order.php']
+  boot(on, baseRoutes(changed))
+  mock.store(on)
+  fakeFs(on, {})
+  await $.session.start(START)
+  await $.tool.call({ tool: TOOL, action: 'start', branch: 'feature/guard', ticket: 'ABC-16' })
+
+  const first = JSON.parse(String((await $.tool.call({ tool: TOOL, action: 'profile', branch: 'feature/guard', detail: 'guard' })).result))
+  expect(first).toEqual({ base: 'main', baseRef: 'origin/main', changedGuarded: ['.github/workflows/ci.yml'], newGuarded: [] })
+  const run = JSON.parse(String((await $.tool.call({ tool: TOOL, action: 'status', branch: 'feature/guard' })).result))
+  expect(run.guardedAtStart).toEqual(['.github/workflows/ci.yml'])
+  expect(run.criteriaDir).toBe('/home/dev/.claude/pipeline/o-r/ABC-16')
+
+  changed.push('CLAUDE.md')
+  const later = JSON.parse(String((await $.tool.call({ tool: TOOL, action: 'profile', branch: 'feature/guard', detail: 'guard' })).result))
+  expect(later.newGuarded).toEqual(['CLAUDE.md'])
+})
+
+test('design and product default to null and are read from a profile file', async ($, on) => {
+  boot(on)
+  mock.store(on)
+  const files: Record<string, string> = {}
+  fakeFs(on, files)
+  await $.session.start(START)
+  await $.tool.call({ tool: TOOL, action: 'start', branch: 'feature/def', ticket: 'ABC-17' })
+
+  const plain = JSON.parse(String((await $.tool.call({ tool: TOOL, action: 'profile', branch: 'feature/def' })).result))
+  expect(plain.profile).toMatchObject({ design: null, product: null })
+
+  files['/repo/.pr-pipeline.json'] = JSON.stringify({ design: 'design-pass', product: 'product-brief' })
+  const given = JSON.parse(String((await $.tool.call({ tool: TOOL, action: 'profile', branch: 'feature/def' })).result))
+  expect(given.profile).toMatchObject({ design: 'design-pass', product: 'product-brief' })
 })

@@ -47,7 +47,7 @@ At the start it asks you one question, at most, covering only what it cannot dec
 
 | # | Stage | What happens |
 | --- | --- | --- |
-| 1 | Enhance | Reads the ticket, writes the acceptance criteria and a spec, posts the spec on the ticket, classifies the task and picks models; asks you to confirm the spec when the work is risky or the criteria had to be derived |
+| 1 | Enhance | Reads the ticket, writes the acceptance criteria and a spec, posts the spec on the ticket, classifies the task and picks models; asks you to confirm the spec when the work is risky or the criteria had to be derived. A feature-sized ticket that does not say what to build, or has no design to follow, is explored first (see [Tickets that are not defined yet](#tickets-that-are-not-defined-yet)) |
 | 2 | Implement | Branches, reproduces a bug with a failing test first, implements, lints, tests, commits |
 | 3 | Create PR | Opens the PR with a skimmable body (link line, status strip, summary, one diagram, test plan) and labels |
 | 4 | AI review | Posts one review: the verdict, a 1–5 score and the reviewer's confidence on top, a short conclusion, a findings table sorted by severity, and a line comment per confirmed defect; a security lane reviews the security surface beside it (see [Security review](#security-review)); swaps the AI label. Starts together with stage 6 |
@@ -66,6 +66,17 @@ Three things keep a run honest and quick:
 ### When e2e is skipped
 
 Not every change needs the running app. Before stage 6 starts, the pipeline checks the repo's `e2ePolicy`, then the changed files and the acceptance criteria. It skips e2e only when every changed file is copy, style, docs, config, CI or a dependency manifest and no criterion needs the running stack; otherwise it runs. The reason shows on the stage row in the pane (`Skipped: <reason>`) and in the e2e slot of the PR's status strip (`e2e: skipped · <reason>`). To force e2e, set `"e2ePolicy": "always"` in the repo profile, or say "run e2e" in your answer to the start question.
+
+### Tickets that are not defined yet
+
+A ticket can be clear enough to start and still not say what to build. For feature, business-logic and architecture work (and sensitive work that adds behaviour), stage 1 checks eight things before it writes the spec: who the change is for, why, what done looks like, where the scope ends, and for user-facing or boundary changes the look and flow, the states, the shape of new data and whether one structure is the obvious fit. It looks in the ticket, its comments, linked tickets, attachments and the code before calling anything missing.
+
+- Everything there: nothing happens, and nothing extra is spent.
+- A detail missing: it is assumed, marked in the spec, and the spec check covers it.
+- The why or the outcome missing: a short product exploration lays out two or three readings of the ticket, recommends one with its criteria and non-goals, and lists the questions only a person can answer.
+- No design and no existing screen to follow: a design pass proposes the flow, the states and the shape from what the repo already has. A choice that running something can settle is settled with a throwaway prototype outside the branch; only preference is left for you.
+
+The result is posted on the ticket as "Pipeline definition notes" and you get one question: build as proposed, or stop so the ticket can be defined. A run nobody can answer (headless) builds the proposal and flags it, which makes the proof ask for a human look. The profile's `product` and `design` fields name skills to run these two steps in place of the built-in ones.
 
 ## Getting the most out of it
 
@@ -138,6 +149,8 @@ Stage 1 sorts the task into a class, and the class decides which model does each
 | sensitive (auth, permissions, money, PII, migrations, contracts, infra, secrets, dependency bumps) | high | opus high everywhere, and the deep security review |
 
 Each stage row in the pane carries a chip with the model that ran it (`opus·high`, `codex·gpt-5-codex`). The start question lets you switch a run to opus everywhere.
+
+The pipeline's own instructions and tool answers are kept small, since every turn of a long run re-reads them. The run skill loads a core and reads each stage's file when that stage starts, so a skipped stage costs nothing. The tool answers with summaries by default (a run's stages as status, flags and counts; a PR as state, failing checks and one line per thread) and gives the full run or the thread bodies only when asked. A stage reports everything it did in one call.
 
 ## Nobody gets pinged
 
@@ -214,6 +227,8 @@ Each repo can describe its conventions in `.pr-pipeline.json` at the root (or `.
 | `lint` | discovered from `package.json`, `composer.json`, `Makefile`, `pyproject.toml`, `Cargo.toml`, `go.mod` | Lint command run before each push. |
 | `test` | discovered, as for `lint` | Test command; narrowed to touched files where the runner allows. |
 | `e2e` | `null` (`e2e-verify` when the repo has that skill) | Skill that drives the real stack at stage 6. Without one, a browser smoke from `.claude/launch.json`. |
+| `product` | `null` | Skill that explores a ticket with no product definition at stage 1. Without one, a built-in exploration in a subagent. |
+| `design` | `null` | Skill that proposes a design at stage 1 when a user-facing ticket has none to follow. Without one, a built-in design pass in a subagent. |
 | `e2ePolicy` | `auto` | Whether stage 6 runs. `auto`: runs unless every changed file is copy, style, docs, config, CI or a manifest and no criterion needs the running stack. `always`: every run. `never`: never. |
 | `securityAgent` | `null` | An agent that runs the security lane in place of the plugin's own, when the review backend is claude. It gets the whole security prompt, method and JSON contract included. Never discovered: set it only on purpose. |
 | `threatModel` | `null` (the first of `SECURITY-REVIEW.md`, `.claude/security-review.md`, `docs/security-review.md` that exists) | The repo's threat model, repo-relative. The implementer reads it before writing code and the security lane checks its invariants first. |
@@ -229,7 +244,7 @@ Discovery (the `profile` action, when there is no file) reads `gh repo view`, `g
 | Path | What |
 | --- | --- |
 | `hooks/` | The pane, the `mcp__pr-pipeline__pipeline` tool, PR polling, Merge and the other pane buttons |
-| `skills/run/` | The conductor that drives the nine stages, plus the spec format, the acceptance-check prompt, tracker adapters, open-PR start, PR body template and the guide for other harnesses |
+| `skills/run/` | The conductor that drives the nine stages. `SKILL.md` holds what every stage needs; `stage-1.md`, `stage-5.md`, `stage-6.md`, `stage-7.md`, `stage-9.md`, `definition.md` (the definition gate) and `ci.md` (failing checks) are read only when their moment comes. Also the spec format, the acceptance-check prompt, tracker adapters, open-PR start, PR body template and the guide for other harnesses |
 | `skills/review/` | The AI review, its backends, the verifier prompt, and the security lane's procedure (`security.md`) |
 | `skills/risk/` | The merge-risk verdict |
 | `agents/reviewer.md` | The read-only reviewer the review skill dispatches |

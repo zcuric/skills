@@ -1,4 +1,5 @@
 import { expect, mock, test } from 'claude-code/testing'
+import type { Engine } from 'claude-code/testing'
 
 import { boot, PANE, PR_URL, prFetches, prRoutes, prThread, prView, ran, sharedStore, START, TOOL } from './kit'
 import type { PrWorld, Route } from './kit'
@@ -333,4 +334,121 @@ test('a reply box holds back its run for ten minutes at most, scheduled refreshe
   expect(views()).toBe(afterLapse)
   expect(await ui.find({ key: 'replyText:T1' })).toBeDefined()
   await ui.unmount()
+})
+
+const shapeWorld = (): PrWorld => ({
+  view: prView({
+    labels: [{ name: 'bug' }],
+    statusCheckRollup: [
+      failing('tests', '987'),
+      { __typename: 'CheckRun', name: 'lint', status: 'COMPLETED', conclusion: 'SUCCESS' },
+      { __typename: 'CheckRun', name: 'e2e', status: 'IN_PROGRESS', conclusion: null },
+    ],
+  }),
+  threads: [
+    prThread('T1', '\n  Please rename this helper  \nIt reads as a getter.', {
+      comments: {
+        nodes: [
+          { id: 'C1', author: { login: 'ana' }, body: '\n  Please rename this helper  \nIt reads as a getter.', diffHunk: '@@ -1 +1 @@', createdAt: '2026-10-01T10:00:00Z', url: `${PR_URL}#discussion_T1` },
+          { id: 'C2', author: { login: 'dev' }, body: 'Renamed in abc123', diffHunk: '@@ -1 +1 @@', createdAt: '2026-10-01T11:00:00Z', url: `${PR_URL}#discussion_C2` },
+        ],
+      },
+    }),
+    prThread('T2', 'x'.repeat(200), { isResolved: true, line: null }),
+  ],
+})
+
+const prAnswerOf = async ($: Engine, branch: string, detail?: string) =>
+  JSON.parse(String((await $.tool.call({ tool: TOOL, action: 'pr', branch, ...(detail !== undefined ? { detail } : {}) })).result))
+
+test('pr answers a summary by default: failing and pending checks and one line per thread, resolved ones too', async ($, on) => {
+  boot(on, prRoutes(shapeWorld()))
+  mock.store(on)
+  await $.session.start(START)
+  await $.tool.call({ tool: TOOL, action: 'start', branch: 'feature/shape', prUrl: PR_URL })
+
+  const summary = await prAnswerOf($, 'feature/shape')
+  expect(Object.keys(summary)).toEqual([
+    'number', 'url', 'state', 'isDraft', 'baseRefName', 'mergeable', 'mergeState', 'reviewDecision', 'labels', 'counts', 'fetchedAt', 'failing', 'pending', 'threads',
+  ])
+  expect(summary.labels).toEqual(['bug'])
+  expect(summary.failing).toEqual([{ name: 'tests', conclusion: 'failure', runId: '987', url: 'https://github.com/o/r/actions/runs/987/job/1' }])
+  expect(summary.pending).toEqual(['e2e'])
+  expect(summary.threads).toEqual([
+    { id: 'T1', path: 'app/a.ts', line: 9, isResolved: false, author: 'ana', last: 'dev', replies: 1, title: 'Please rename this helper' },
+    { id: 'T2', path: 'app/a.ts', isResolved: true, author: 'ana', last: 'ana', replies: 0, title: 'x'.repeat(120) },
+  ])
+})
+
+test('pr detail threads carries the unresolved threads in full, without hunks, and counts the resolved', async ($, on) => {
+  boot(on, prRoutes(shapeWorld()))
+  mock.store(on)
+  await $.session.start(START)
+  await $.tool.call({ tool: TOOL, action: 'start', branch: 'feature/threads', prUrl: PR_URL })
+
+  const answer = await prAnswerOf($, 'feature/threads', 'threads')
+  expect(answer.failing).toHaveLength(1)
+  expect(answer.resolved).toBe(1)
+  expect(answer.threads).toEqual([{
+    id: 'T1',
+    path: 'app/a.ts',
+    line: 9,
+    isResolved: false,
+    comments: [
+      { author: 'ana', body: '\n  Please rename this helper  \nIt reads as a getter.', url: `${PR_URL}#discussion_T1`, createdAt: '2026-10-01T10:00:00Z' },
+      { author: 'dev', body: 'Renamed in abc123', url: `${PR_URL}#discussion_C2`, createdAt: '2026-10-01T11:00:00Z' },
+    ],
+  }])
+  expect(JSON.stringify(answer)).not.toContain('diffHunk')
+})
+
+test('pr detail full is the whole snapshot', async ($, on) => {
+  boot(on, prRoutes(shapeWorld()))
+  mock.store(on)
+  await $.session.start(START)
+  await $.tool.call({ tool: TOOL, action: 'start', branch: 'feature/full', prUrl: PR_URL })
+
+  const full = await prAnswerOf($, 'feature/full', 'full')
+  expect(full.title).toBe('Fix the thing')
+  expect(full.checks).toHaveLength(3)
+  expect(full.reviews).toHaveLength(1)
+  expect(full.threads[0].comments[0].diffHunk).toBe('@@ -1 +1 @@')
+  expect(full.threads).toHaveLength(2)
+})
+
+test('pr-reply with resolve replies, then resolves the thread', async ($, on) => {
+  const { calls } = boot(on, prRoutes(blockedWorld()))
+  mock.store(on)
+  await $.session.start(START)
+  await $.tool.call({ tool: TOOL, action: 'start', branch: 'feature/both', prUrl: PR_URL })
+
+  const answer = await $.tool.call({ tool: TOOL, action: 'pr-reply', branch: 'feature/both', threadId: 'T1', body: 'Fixed in abc123', resolve: true })
+  expect(answer.result).toBe('Replied to T1 and resolved it.')
+  const mutations = ran(calls, 'gh', 'api', 'graphql').filter(argv => argv.some(part => part.startsWith('query=mutation')))
+  expect(mutations.map(argv => argv.some(part => part.includes('resolveReviewThread')))).toEqual([false, true])
+})
+
+test('pr-reply with resolve says so when the resolve fails, and never resolves after a failed reply', async ($, on) => {
+  let isReplyRefused = false
+  const { calls } = boot(on, [
+    [['gh', 'api', 'graphql'], argv => {
+      if (argv.some(part => part.includes('resolveReviewThread'))) return { exitCode: 1, stderr: 'GraphQL: Resource not accessible by integration' }
+      if (isReplyRefused && argv.some(part => part.includes('addPullRequestReviewThreadReply'))) return { exitCode: 1, stderr: 'GraphQL: thread is locked' }
+      return { stdout: '{}' }
+    }],
+    ...prRoutes(blockedWorld()),
+  ])
+  mock.store(on)
+  await $.session.start(START)
+  await $.tool.call({ tool: TOOL, action: 'start', branch: 'feature/half', prUrl: PR_URL })
+
+  const half = await $.tool.call({ tool: TOOL, action: 'pr-reply', branch: 'feature/half', threadId: 'T1', body: 'Fixed', resolve: true })
+  expect(half.result).toBe('Replied to T1, but resolving it failed: GraphQL: Resource not accessible by integration')
+
+  isReplyRefused = true
+  const resolves = () => ran(calls, 'gh', 'api', 'graphql').filter(argv => argv.some(part => part.includes('resolveReviewThread'))).length
+  const before = resolves()
+  const refused = await $.tool.call({ tool: TOOL, action: 'pr-reply', branch: 'feature/half', threadId: 'T1', body: 'Fixed', resolve: true })
+  expect(refused.deny).toBe('pr-pipeline: GraphQL: thread is locked')
+  expect(resolves()).toBe(before)
 })

@@ -17,6 +17,7 @@ Use these headings, in this order. Leave out a section that has nothing to say.
 | **Goal** | One or two sentences: what changes, for whom, and why it matters. The why is what lets the implementer decide the cases the ticket did not cover. |
 | **Today** | What happens now, citing the `path:line` you opened. For a bug: the reproduction steps you will use, then observed against expected. |
 | **Expected** | The behaviour after the change, as statements someone can observe or test. |
+| **Design** | Only when the definition gate ran a design pass (`definition.md`): what the change follows, the flow or the shape, the states, the option taken. Under 15 lines, condensed from `<criteriaDir>/definition-notes.md`. |
 | **Acceptance criteria** | The list from `<criteriaDir>/acceptance.md`, word for word, derived ones marked `(derived)`. |
 | **Where** | The files and functions the change touches, and the existing pattern to follow (`follow ExportController@csv`). |
 | **Stays as it is** | Adjacent behaviour and code that a reader might be tempted to change and should leave: the neighbouring refactor, the other callers, the old endpoint. |

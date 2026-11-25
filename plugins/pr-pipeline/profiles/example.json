@@ -17,6 +17,8 @@
   "lint": "npm run lint",
   "test": "npm test",
   "e2e": "e2e-verify",
+  "design": null,
+  "product": null,
   "securityAgent": null,
   "threatModel": "SECURITY-REVIEW.md",
   "siblings": [],

@@ -391,8 +391,9 @@ export const register: Register = (on, rawOptions) => {
       return { text: 'PR pipeline pane opened.' }
     }
     const ticket = classifyTicket(args, (await liveOptions($, options)).tracker)
-    await $.prompt.submit({ text: ticket.prompt })
     await $.ui.open({ id: PANE, title: 'PR pipeline', focus: true })
+    // The engine refuses prompt.submit inside a command.run hook: the submit goes out once the command has answered.
+    $.clock.after(1, () => void $.prompt.submit({ text: ticket.prompt }).catch(err => $.ui.toast(String(err))))
     return { text: `Pipeline started for ${ticket.ticket}.` }
   })
 

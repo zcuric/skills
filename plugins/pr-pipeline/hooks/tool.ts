@@ -3,13 +3,16 @@ import type { EngineInterface } from 'claude-code'
 
 import type {
   Criterion,
+  Detail,
   Met,
   PipelineAction,
   PipelineOptions,
   PipelineRun,
   PipelineToolInput,
   PrRef,
+  PrSnapshot,
   PrState,
+  PrThread,
   Risk,
   Runs,
   Stage,
@@ -20,8 +23,9 @@ import type {
   Tier,
 } from '../types'
 import { currentBranch, git, parsePrUrl, prHeadRef, prHeadSha, prPageUrl, replyToThread, resolveThread } from './github'
-import { prRefOf, refreshPr, schedulePrRefresh } from './pr'
+import { failedChecks, prRefOf, refreshPr, schedulePrRefresh } from './pr'
 import { resolveProfile } from './profile'
+import type { ProfileResult } from './profile'
 import {
   BACKENDS, CLAUDE_MODELS, EFFORTS, STAGES, TRACKERS, addSessionKey, changeRun, closeRun, ensureHarnesses, followStoreOnce, freshRun,
   isOpenRun, isStageId, openPane, pipelineOptions, rekeyRun, repoFor, resolveRun, runKey, runKeyOf, shortModel, stageLabel, watchPr,
@@ -42,6 +46,9 @@ const ENDINGS: readonly StageStatus[] = ['done', 'failed', 'skipped']
 const TIERS: readonly Tier[] = ['S', 'M', 'L']
 const RISKS: readonly Risk[] = ['low', 'medium', 'high']
 const METS: readonly Met[] = ['yes', 'partial', 'no']
+const DETAILS: readonly Detail[] = ['summary', 'threads', 'full', 'guard']
+const DETAIL_ACTIONS: Record<Detail, readonly PipelineAction[]> = { summary: ['status', 'pr'], full: ['status', 'pr'], threads: ['pr'], guard: ['profile'] }
+const TITLE_LENGTH = 120
 const PR_PAGE = /\/pull\/\d+\/?$/
 const BRANCH_MOVE = /\bgit\s+(checkout\s+-b|switch\s+(?:-c|--create)|branch\s+(?:-m|-M|--move)|worktree\s+add\b[^;&|\n]*?\s-[bB])\s+([^;&|\n]+)/
 const REFRESH_STAGES: readonly StageId[] = ['pr', 'review', 'address', 'proof']
@@ -91,6 +98,117 @@ const stageModel = (input: PipelineToolInput, known: StageModel | undefined): St
 const isOpenStage = (stage: Stage): boolean => stage.status === 'pending' || stage.status === 'running'
 
 const stageList = (stages: Stage[]): string => stages.map(stage => `${stage.id} (${stage.status})`).join(', ')
+
+/** Every non-empty string of a string-or-list input, in order. */
+const entries = (value: string | string[] | undefined): string[] =>
+  (Array.isArray(value) ? value : [value]).filter((item): item is string => typeof item === 'string' && item !== '')
+
+const counted = (name: string, count: number): string | null => {
+  if (count === 0) return null
+  return count === 1 ? name : `${count} ${name}`
+}
+
+const stageSummary = (stage: Stage): Record<string, unknown> => ({
+  id: stage.id,
+  status: stage.status,
+  ...(stage.attempt !== undefined ? { attempt: stage.attempt } : {}),
+  ...(stage.summary ? { summary: stage.summary } : {}),
+  ...(stage.confidence !== undefined ? { confidence: stage.confidence } : {}),
+  ...(stage.headSha !== undefined ? { headSha: stage.headSha } : {}),
+  ...(stage.flags.length > 0 ? { flags: stage.flags } : {}),
+  ...(stage.did.length > 0 ? { did: stage.did.length } : {}),
+  ...(stage.notes.length > 0 ? { notes: stage.notes.length } : {}),
+  ...(stage.criteria.length > 0 ? { criteria: stage.criteria.length } : {}),
+})
+
+/** The run with each stage cut to its status, verdict, flags and counts. */
+export const runSummary = (run: PipelineRun): Record<string, unknown> => ({ ...run, stages: run.stages.map(stageSummary) })
+
+const firstLine = (text: string): string => (text.split('\n').map(line => line.trim()).find(line => line !== '') ?? '').slice(0, TITLE_LENGTH)
+
+const threadPlace = (thread: PrThread): Record<string, unknown> => ({
+  id: thread.id,
+  path: thread.path,
+  ...(thread.line !== null ? { line: thread.line } : {}),
+  isResolved: thread.isResolved,
+  ...(thread.isOutdated ? { isOutdated: true } : {}),
+})
+
+const threadSummary = (thread: PrThread): Record<string, unknown> => {
+  const first = thread.comments[0]
+  const last = thread.comments[thread.comments.length - 1]
+  return {
+    ...threadPlace(thread),
+    ...(first !== undefined ? { author: first.author } : {}),
+    ...(last !== undefined ? { last: last.author } : {}),
+    replies: Math.max(thread.comments.length - 1, 0),
+    ...(first !== undefined ? { title: firstLine(first.body) } : {}),
+  }
+}
+
+const threadComments = (thread: PrThread): Record<string, unknown> => ({
+  ...threadPlace(thread),
+  comments: thread.comments.map(comment => ({
+    author: comment.author,
+    body: comment.body,
+    ...(comment.url !== '' ? { url: comment.url } : {}),
+    ...(comment.createdAt !== '' ? { createdAt: comment.createdAt } : {}),
+  })),
+})
+
+const prHeadline = (snapshot: PrSnapshot): Record<string, unknown> => ({
+  number: snapshot.number,
+  url: snapshot.url,
+  state: snapshot.state,
+  isDraft: snapshot.isDraft,
+  baseRefName: snapshot.baseRefName,
+  mergeable: snapshot.mergeable,
+  mergeState: snapshot.mergeState,
+  reviewDecision: snapshot.reviewDecision,
+  ...(snapshot.headSha !== undefined ? { headSha: snapshot.headSha } : {}),
+  labels: snapshot.labels,
+  counts: snapshot.counts,
+  fetchedAt: snapshot.fetchedAt,
+  failing: failedChecks(snapshot).map(check => ({
+    name: check.name,
+    conclusion: check.conclusion,
+    ...(check.runId !== undefined ? { runId: check.runId } : {}),
+    ...(check.url !== undefined ? { url: check.url } : {}),
+  })),
+  pending: snapshot.checks.filter(check => check.status !== 'completed').map(check => check.name),
+})
+
+/** The PR's state, failing and pending checks, and one line per thread. */
+export const prSummaryAnswer = (snapshot: PrSnapshot): Record<string, unknown> =>
+  ({ ...prHeadline(snapshot), threads: snapshot.threads.map(threadSummary) })
+
+/** The summary with the unresolved threads in full, hunks left out. */
+export const prThreadsAnswer = (snapshot: PrSnapshot): Record<string, unknown> => {
+  const open = snapshot.threads.filter(thread => !thread.isResolved)
+  return { ...prHeadline(snapshot), threads: open.map(threadComments), resolved: snapshot.threads.length - open.length }
+}
+
+const prAnswer = (snapshot: PrSnapshot, detail: Detail | undefined): Record<string, unknown> | PrSnapshot => {
+  if (detail === 'full') return snapshot
+  if (detail === 'threads') return prThreadsAnswer(snapshot)
+  return prSummaryAnswer(snapshot)
+}
+
+const guardAnswer = (result: ProfileResult & { newGuarded?: string[] }): Record<string, unknown> => ({
+  ...(result.base !== undefined ? { base: result.base } : {}),
+  ...(result.baseRef !== undefined ? { baseRef: result.baseRef } : {}),
+  ...(result.changedGuarded !== undefined ? { changedGuarded: result.changedGuarded } : {}),
+  ...(result.newGuarded !== undefined ? { newGuarded: result.newGuarded } : {}),
+})
+
+const detailRefusal = (input: PipelineToolInput): string | null => {
+  if (input.detail === undefined) return null
+  if (!DETAILS.includes(input.detail)) return `"detail" must be one of ${DETAILS.join(', ')}.`
+  const actions = DETAIL_ACTIONS[input.detail]
+  if (!actions.includes(input.action)) return `"detail" ${input.detail} is for ${actions.join(' and ')} only, not ${input.action}.`
+  if (input.detail === 'guard' && input.save === true) return '"detail" guard cannot go with "save": true; save without it.'
+  return null
+}
 
 const noRunText = (key: string, all: Runs): string => {
   const open = Object.values(all).filter(run => isOpenRun(run) && !run.prOnly).map(run => run.key)
@@ -164,7 +282,8 @@ async function profileAnswer($: EngineInterface, input: PipelineToolInput, key: 
     ...(guardedAtStart !== undefined ? { guardedAtStart: existing.guardedAtStart ?? guardedAtStart } : {}),
   }))
   const newGuarded = changedGuarded !== undefined && guardedAtStart !== undefined ? changedGuarded.filter(path => !guardedAtStart.includes(path)) : undefined
-  return { result: JSON.stringify({ ...resolved.result, ...(newGuarded !== undefined ? { newGuarded } : {}) }) }
+  const answer = { ...resolved.result, ...(newGuarded !== undefined ? { newGuarded } : {}) }
+  return { result: JSON.stringify(input.detail === 'guard' ? guardAnswer(answer) : answer) }
 }
 
 async function threadAnswer($: EngineInterface, input: PipelineToolInput, key: string): Promise<ToolAnswer> {
@@ -181,12 +300,17 @@ async function threadAnswer($: EngineInterface, input: PipelineToolInput, key: s
   if (!input.body) return deny('"pr-reply" needs body.')
   const replied = await replyToThread($, ref, input.threadId, input.body, run?.cwd)
   if (!replied.ok) return deny(replied.error)
+  const resolved = input.resolve === true ? await resolveThread($, ref, input.threadId, run?.cwd) : null
   await schedulePrRefresh($, key, 0)
-  return { result: `Replied to ${input.threadId}.` }
+  if (resolved === null) return { result: `Replied to ${input.threadId}.` }
+  if (!resolved.ok) return { result: `Replied to ${input.threadId}, but resolving it failed: ${resolved.error}` }
+  return { result: `Replied to ${input.threadId} and resolved it.` }
 }
 
 export async function handleTool($: EngineInterface, input: PipelineToolInput, options: PipelineOptions): Promise<ToolAnswer> {
   if (!ACTIONS.includes(input.action)) return deny(`"action" must be one of ${ACTIONS.join(', ')}.`)
+  const detailDenied = detailRefusal(input)
+  if (detailDenied !== null) return deny(detailDenied)
   if (input.action === 'settings') return settingsAnswer($, input, options)
   if (input.tier !== undefined && !TIERS.includes(input.tier)) return deny('"tier" must be S, M or L.')
   if (input.risk !== undefined && !RISKS.includes(input.risk)) return deny('"risk" must be low, medium or high.')
@@ -215,7 +339,7 @@ async function runAnswer($: EngineInterface, input: PipelineToolInput, resolved:
 
   if (input.action === 'start') return startAnswer($, input, resolved, before, now)
   if (before === undefined || (before.prOnly && RUN_ONLY.includes(input.action))) return deny(noRunText(key, all))
-  if (input.action === 'status') return { result: JSON.stringify(before) }
+  if (input.action === 'status') return { result: JSON.stringify(input.detail === 'full' ? before : runSummary(before)) }
   if (input.action === 'close') {
     await closeRun($, key)
     return { result: `Run ${before.ticket ?? key} closed.` }
@@ -223,7 +347,8 @@ async function runAnswer($: EngineInterface, input: PipelineToolInput, resolved:
   if (input.action === 'pr') {
     if (prRefOf(before) === null) return { result: JSON.stringify({ error: 'this run has no PR' }) }
     const state = await refreshPr($, key, { fresh: input.fresh === true, reason: 'tool' })
-    return { result: JSON.stringify(state?.snapshot ?? { error: state?.error ?? 'PR not fetched' }) }
+    if (state?.snapshot === undefined) return { result: JSON.stringify({ error: state?.error ?? 'PR not fetched' }) }
+    return { result: JSON.stringify(prAnswer(state.snapshot, input.detail)) }
   }
   if (input.action === 'pr-reply' || input.action === 'pr-resolve') return threadAnswer($, input, key)
   if (input.action === 'profile') return profileAnswer($, input, key, before)
@@ -259,6 +384,9 @@ async function runAnswer($: EngineInterface, input: PipelineToolInput, resolved:
     return deny('a "criterion" needs "met" yes, partial or no.')
   }
   const status = input.status
+  const did = entries(input.did)
+  const flags = entries(input.flag)
+  const notes = entries(input.note)
   const criterion: Criterion | undefined = input.criterion !== undefined && input.met !== undefined
     ? { text: input.criterion, met: input.met, ...(input.evidence !== undefined ? { evidence: input.evidence } : {}) }
     : undefined
@@ -295,9 +423,9 @@ async function runAnswer($: EngineInterface, input: PipelineToolInput, resolved:
         finishedAt: isEnding ? now : status !== undefined && !ENDINGS.includes(status) ? undefined : stage.finishedAt,
         summary: input.summary ?? stage.summary,
         confidence: input.confidence ?? stage.confidence,
-        did: input.did ? [...stage.did, input.did] : stage.did,
-        flags: input.flag ? [...stage.flags, input.flag] : stage.flags,
-        notes: input.note ? [...stage.notes, input.note] : stage.notes,
+        did: [...stage.did, ...did],
+        flags: [...stage.flags, ...flags],
+        notes: [...stage.notes, ...notes],
         criteria: criterion ? withCriterion(stage.criteria, criterion) : stage.criteria,
         headSha: headSha ?? stage.headSha,
       }
@@ -315,7 +443,8 @@ async function runAnswer($: EngineInterface, input: PipelineToolInput, resolved:
     $.ui.toast(`Pipeline done: ${run.branch} is ready for human review`)
   }
 
-  const appended = [input.did && 'did', input.flag && 'flag', input.note && 'note', criterion && 'criterion'].filter(Boolean)
+  const appended = [counted('did', did.length), counted('flag', flags.length), counted('note', notes.length), criterion ? 'criterion' : null]
+    .filter((part): part is string => part !== null)
   const tail = appended.length > 0 ? ` (+${appended.join(', ')})` : ''
   const warnings = [
     isUnstartedEnd ? '(no running call was recorded)' : null,
@@ -478,26 +607,28 @@ export const TOOL_DESCRIPTION =
   'Records progress of the PR pipeline the pr-pipeline:run skill drives, keyed by repo and branch. ' +
   'action "start" opens a run (ticket, ticketUrl, tracker, title, repo, tier S|M|L, prUrl). ' +
   'action "stage" sets one stage (enhance, implement, pr, review, address, verify, acceptance, risk, proof) ' +
-  'to a status (running, done, failed, skipped) with a one-line summary; "running" again on a finished stage starts its next attempt. ' +
-  'It also appends "did" (what was done), "flag" (a warning a developer must see), "note" (a decision), ' +
+  'to a status (running, done, failed, skipped) with a one-line summary; "running" on a finished stage starts its next attempt. ' +
+  'It appends "did" (what was done), "flag" (a warning a developer must see), "note" (a decision), each a string or a list, ' +
   'or a "criterion" with "met" yes|partial|no and "evidence" (the same text replaces the earlier verdict); ' +
   '"confidence" is a percentage 0-100 (92, not 0.92); ' +
-  '"backend" (claude, codex, opencode, custom), "model" and "effort" record who ran the stage; ' +
+  '"backend" (claude|codex|opencode|custom), "model" and "effort" record who ran the stage; ' +
   '"tier" at triage and "risk" low|medium|high at the merge-risk stage are kept on the run. ' +
   'action "link" attaches a labelled URL to a stage; a PR page URL from the run\'s repo becomes the run\'s PR when the run has none, ' +
   'or when linked to the pr stage. action "unlink" (stage, href) removes a link; unlinking the run\'s PR clears it. ' +
-  'action "pr" returns the live PR (checks, reviews, threads) as JSON; "fresh" skips the 15 s cache. ' +
-  'action "pr-reply" (threadId, body) replies to a review thread; "pr-resolve" (threadId) resolves one. ' +
+  'action "pr" returns the live PR: state, counts, failing and pending checks, one line per thread; ' +
+  '"detail": "threads" gives the unresolved threads\' comments instead, "full" the whole snapshot; "fresh" skips the 15 s cache. ' +
+  'action "pr-reply" (threadId, body, resolve?) replies to a review thread, then resolves it when "resolve" is true; "pr-resolve" (threadId) resolves one. ' +
   'action "settings" returns the review settings and detected tools; "set" writes settings ' +
-  '(reviewer claude, codex, opencode or custom; review_command, the shell command the custom reviewer runs, is returned but only a person sets it, and custom is refused without one). ' +
+  '(reviewer claude|codex|opencode|custom; review_command, the custom reviewer\'s shell command, is returned but only a person sets it, and custom is refused without one). ' +
   'action "profile" resolves the repo profile (.pr-pipeline.json, then .claude/pr-pipeline.json, else discovery from gh and the build files), ' +
   'fills every default, creates the criteria directory and returns { source, path?, fromBase?, discovered?, base?, baseRef?, changedGuarded?, newGuarded?, profile, criteriaDir }; ' +
-  'base is the base branch of the run\'s PR, else the default branch, and baseRef (origin/<base>) is fetched on every call; ' +
-  'a tracked profile file the branch changes is read from baseRef (fromBase), one the branch adds is ignored, changedGuarded lists the rule-setting or secret-shaped files the branch changes, ' +
-  'and newGuarded those of them that were not there at the run\'s first profile call. ' +
-  '"save": true writes a discovered profile as .pr-pipeline.json (left untracked) and is refused when a profile file exists. ' +
+  '"detail": "guard" keeps only base, baseRef, changedGuarded, newGuarded. ' +
+  'base is the run\'s PR base, else the default branch; baseRef (origin/<base>) is fetched on every call; ' +
+  'a tracked profile file the branch changes is read from baseRef (fromBase), one the branch adds is ignored; changedGuarded lists the rule-setting or secret-shaped files the branch changes, ' +
+  'newGuarded those not there at the run\'s first profile call. ' +
+  '"save": true writes a discovered profile as .pr-pipeline.json (left untracked), refused when a profile file exists. ' +
   'A review, acceptance or proof set to done records the commit it judged: "sha", else the PR head, else HEAD. ' +
-  'action "close" closes the run. action "status" returns the run as JSON. ' +
+  'action "close" closes the run. action "status" returns the run with each stage cut to status, verdict, flags and counts; "detail": "full" returns it whole. ' +
   'Only "start" creates a run; a PR followed without one (prOnly) takes "status", "pr", "pr-reply", "pr-resolve" and "close" until "start" turns it into a run. ' +
   'Every other action needs a run, and "proof" cannot be done while another stage is pending or running.'
 
@@ -517,9 +648,9 @@ export const INPUT_SCHEMA = {
     stage: { type: 'string', enum: STAGES.map(stage => stage.id) },
     status: { type: 'string', enum: [...STATUSES] },
     summary: { type: 'string', description: 'One line shown on the stage row' },
-    did: { type: 'string', description: 'One thing the stage did, for a developer skimming' },
-    flag: { type: 'string', description: 'A warning the developer must see before trusting the stage' },
-    note: { type: 'string', description: 'A decision or finding, appended to the stage' },
+    did: { type: ['string', 'array'], items: { type: 'string' }, description: 'One thing the stage did, or a list, for a developer skimming' },
+    flag: { type: ['string', 'array'], items: { type: 'string' }, description: 'A warning the developer must see before trusting the stage, or a list' },
+    note: { type: ['string', 'array'], items: { type: 'string' }, description: 'A decision or finding, or a list, appended to the stage' },
     criterion: { type: 'string', description: 'An acceptance criterion, with met and evidence' },
     met: { type: 'string', enum: [...METS] },
     evidence: { type: 'string', description: 'Test name, screenshot path, log line, row' },
@@ -532,6 +663,8 @@ export const INPUT_SCHEMA = {
     fresh: { type: 'boolean', description: 'pr: skip the 15 s cache' },
     threadId: { type: 'string', description: 'pr-reply, pr-resolve: review thread id' },
     body: { type: 'string', description: 'pr-reply: the reply' },
+    resolve: { type: 'boolean', description: 'pr-reply: resolve the thread after replying' },
+    detail: { type: 'string', enum: [...DETAILS], description: 'status, pr: summary (default) or full; pr: threads; profile: guard' },
     save: { type: 'boolean', description: 'profile: write a discovered profile as .pr-pipeline.json' },
     sha: { type: 'string', description: 'stage: the commit a done review, acceptance or proof judged; defaults to the PR head' },
     set: {

@@ -28,6 +28,14 @@
     "lint": { "type": "string" },
     "test": { "type": "string" },
     "e2e": { "type": ["string", "null"] },
+    "design": {
+      "type": ["string", "null"],
+      "description": "Skill the stage-1 definition gate runs when a user-facing ticket has no design to follow; null uses the built-in design pass"
+    },
+    "product": {
+      "type": ["string", "null"],
+      "description": "Skill the stage-1 definition gate runs when a ticket lacks a product definition; null uses the built-in product exploration"
+    },
     "e2ePolicy": { "type": "string", "enum": ["auto", "always", "never"] },
     "securityAgent": { "type": ["string", "null"] },
     "threatModel": { "type": ["string", "null"] },

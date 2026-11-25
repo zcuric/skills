@@ -11,6 +11,20 @@ The tool is deferred: when `mcp__pr-pipeline__pipeline` is not loaded, load it f
 
 The prompt usually comes from `/pipeline` and carries a hint: `Run the pr-pipeline:run skill for <ticket> (tracker: <t>, url: <u>).`, or for a task in words, `… for this task (tracker: text): <text>`. Without a hint, treat the argument the same way `/pipeline` would. A PR instead of a ticket (`(tracker: pr, url: …)`, or a PR number or URL): read `open-pr.md` from this skill's directory before stage 1.
 
+## Files to read, and when
+
+This file holds what every stage needs. The rest is in files in this skill's directory. Read each at the moment the table names, not before, and read it again when a long run has been summarized and it is no longer in your context:
+
+| File | Read it |
+| --- | --- |
+| `stage-1.md` | at stage 1, every run: profile, review backend, class and routing, the stage-1 question, the steps |
+| `definition.md` | at stage 1, for the classes `stage-1.md` names: is the ticket defined enough to build |
+| `ci.md` | when a check fails, the base moved or the PR conflicts |
+| `stage-5.md` | entering stage 5, unless the stage is skipped |
+| `stage-6.md` | when 6a decides e2e runs |
+| `stage-7.md` | entering stage 7 |
+| `stage-9.md` | entering stage 9 |
+
 ## Recording
 
 The pane's stage detail is what a developer reads instead of the transcript. Keep it concise and honest, and record each transition as it happens:
@@ -18,79 +32,33 @@ The pane's stage detail is what a developer reads instead of the transcript. Kee
 | Moment | Call |
 | --- | --- |
 | Once at the start | `{ action: "start", ticket, title, tracker, ticketUrl, repo }` (`repo` is `owner/name`; omit `ticketUrl` for text). It returns the run key `owner/repo#branch`. A different ticket on the same branch starts a fresh run |
-| Right after `start` | `{ action: "profile" }` (see "Repo profile") |
+| Right after `start` | `{ action: "profile" }` (see `stage-1.md`) |
 | Entering a stage | `{ action: "stage", stage, status: "running", summary }`, plus `backend`, `model`, `effort` for a routed stage only (the chip on the stage row; a stage this session runs itself omits them). Running a finished stage again starts attempt 2, 3…: its summary and confidence clear, its history stays |
-| What the stage did (1–4 per stage), a warning, a decision you made alone | `{ action: "stage", stage, did }`, or `flag` or `note` in place of `did` |
+| What the stage did (1–4 per stage), a warning, a decision you made alone | `did`, `flag` and `note` on a stage call. Each takes one string or a list, and one call carries any mix of them with the `status` and `summary`: `{ action: "stage", stage, status: "done", summary, did: ["…", "…"], note: "…" }`. Send what you have in one call, not one call per line |
 | An acceptance criterion checked (stage 7) | `{ action: "stage", stage: "acceptance", criterion, met: "yes" \| "partial" \| "no", evidence }`; the same criterion text again replaces the earlier verdict |
 | A URL (PR, ticket comment, review, screenshot, artifact) | `{ action: "link", stage, label, href }`. A PR link becomes the run's PR only when the run has none, or on the `pr` stage from the run's repo. A wrong link: `{ action: "unlink", stage, href }`; unlinking the run's PR clears it |
 | Tier (stage 1), merge risk (stage 8) | add `tier: "S" \| "M" \| "L"` or `risk: "low" \| "medium" \| "high"` to the stage call |
 | Leaving a stage | `status: "done" \| "failed" \| "skipped"`, one-line `summary`, `confidence` where the stage scored something, as a percentage (`92`, not `0.92`). `review`, `acceptance` and `proof` marked `done` get the PR head stamped as `headSha` |
-| PR state (after any stage that wrote to the PR, and whenever you need checks or threads) | `{ action: "pr" }`, or `{ action: "pr", fresh: true }` right after a push or a reply |
-| Answer or resolve a review thread | `{ action: "pr-reply", threadId, body }`, `{ action: "pr-resolve", threadId }` |
-| Where the run stands | `{ action: "status" }` (includes `pr`, `models`, `criteriaDir`, each stage's `headSha`, `mergedAt`, `closedAt`) |
+| PR state (after any stage that wrote to the PR, and whenever you need checks or threads) | `{ action: "pr" }`, or `{ action: "pr", fresh: true }` right after a push or a reply. The answer is a summary: state, `mergeable`, `mergeState`, `reviewDecision`, `headSha`, `counts`, the `failing` checks (name, `runId`), the `pending` ones, and one line per thread (`id`, `path`, `line`, `isResolved`, `title`). `detail: "threads"` gives the unresolved threads with every comment's body; ask for it only when you are about to act on them. `detail: "full"` is the whole snapshot and is rarely needed |
+| Answer or resolve a review thread | `{ action: "pr-reply", threadId, body, resolve: true }` replies and resolves in one call; leave `resolve` out to reply only. `{ action: "pr-resolve", threadId }` resolves without a reply |
+| Where the run stands | `{ action: "status" }`: the run (`pr`, `models`, `criteriaDir`, `tier`, `risk`, `mergedAt`, `closedAt`) and per stage its status, summary, confidence, `headSha`, flags and counts. `detail: "full"` adds every `did`, `note`, link and criterion; ask for it only to rebuild what you lost |
 | The run is over without a merge (PR closed, person abandons it) | `{ action: "close" }` |
 
 `did` is what happened (`Added failing test, then fixed the validator`), `flag` is a warning a developer must see before trusting the stage (`Migration rewrites orders; run on staging before merge`), `note` is a choice (`Reused DateRule instead of a new one`); never record one fact under two of them. A flag is for things like: a criterion derived rather than given, a skipped reviewer finding, a test that only passes with a workaround, a sensitive area touched, a step that ran in a fallback (subagent instead of a session, claude instead of the chosen review backend), a branch rename. Flags show as ⚠ on the stage row and at the top of the detail view. Skip a stage only with a reason in `summary`. A stage that fails stops the pipeline; record it, tell the person, end the turn.
 
-## Setup at stage 1
+## What stage 1 settles
 
-Stage 1 settles everything the later stages read: the tracker, the repo profile, the review backend, the task class and its routing. Then it asks the person one question, once, and never again.
+Stage 1 settles what every later stage reads, and leaves it where it can be read again:
 
-**Tracker.** Read `trackers.md` from this skill's directory at stage 1, every run: it has the detection order, how to fetch the ticket, and the key, title prefix, link line, branch key and comment command per tracker that stages 2, 3 and 9 use.
+- `{ action: "profile" }` returns `profile` (the repo profile with every default filled), `criteriaDir` (an absolute path the tool has already created; `<criteriaDir>` below), `base` (the base branch of the run's PR once it has one, a stacked PR's parent, else the repo's default branch; `$BASE` below, fall back to `main`), `baseRef`, `changedGuarded` and `newGuarded`.
+- `<criteriaDir>/spec.md` and `<criteriaDir>/acceptance.md`: the brief and the criteria.
+- `<criteriaDir>/route.md`: the class, the tier, and for stages 2, 4, 6, 7 and 8 the model, the effort and where the stage runs. "The route" below means this file.
 
-### Repo profile
-
-Call `{ action: "profile" }` right after `start`. It returns `{ source, path?, fromBase?, discovered?, base?, baseRef?, changedGuarded?, newGuarded?, profile, criteriaDir }`; `base` is the base branch of the run's PR once it has one (a stacked PR's parent), else the repo's default branch (`$BASE` below; fall back to `main`): the profile from `.pr-pipeline.json` or `.claude/pr-pipeline.json`, or discovered from the repo when neither exists, with every default filled, and `criteriaDir` as an absolute path the tool has already created. Use `profile` and that `criteriaDir` (`<criteriaDir>` below) everywhere. With `source: "discovered"`, record the `discovered` line as a stage-1 `note` and offer the save in the stage-1 question; on Save call `{ action: "profile", save: true }`, which writes `.pr-pipeline.json` untracked (commits add named paths only, so it never enters one).
+When one of these is no longer in your context, read the file or call `profile` again. Never rebuild a route or a path from memory.
 
 **Rules come from the base.** The rules the run and the reviewer are given are the base's, not the branch's. The harness may still load the checkout's own `CLAUDE.md` or `AGENTS.md` into an agent, so the guard is the flag on a changed rule file, not the copy alone. The tool reads a tracked profile file the branch changes from `baseRef` (`fromBase: true`) and ignores one the branch adds. Read the profile's `rules` files, its `threatModel` and every `REVIEW.md` the same way, with `git show <baseRef>:<path>`, never from the checkout; a file missing at `baseRef` is not a rule. `changedGuarded` lists the guarded files the branch changes: rule files, `REVIEW.md`, `CODEOWNERS`, `.claude/`, `.github/`, `.ai/rules/`, git hooks, the profile itself, secret-shaped files (`.env`, keys). Record each as a `flag`, once; any one makes stage 9's human look yes. `newGuarded` is the part of that list that was not there at the run's first `profile` call: those changes are the run's own, the rest were on the branch before it (a colleague's PR, a hand commit). The tool fetches `baseRef` on every call, so the base is current. With no `baseRef` (offline, or the base branch is not on `origin`): read from the checkout and record `flag: "Base not fetched; rule files read from the branch"`.
 
 The fields the stages read: `tracker` (1), `branchPattern` (2), `titlePrefix`, `linkLine`, `prBody` (3), `labels.*` (3, 4, 7, 9), `lint`, `test` (2, 5), `e2e`, `e2ePolicy` (6), `securityAgent` (4), `threatModel` (2, 4), `siblings` (2, 4, 6), `rules` (2, 4, commits). In `branchPattern` expand `{type}` (`fix` for a bug, `feature` otherwise), `{key}` (the tracker's branch key) and `{slug}` (three to five words of the title, kebab case), dropping a separator next to an empty placeholder; in `titlePrefix` and `linkLine`, `{key}`, `{url}` and `{n}` are the ticket key, URL and issue number.
-
-### Review backend
-
-Call `{ action: "settings" }`. It returns `reviewer`, `review_model`, `review_effort`, `review_command`, `tracker`, `merge_method`, `harnesses` (`gh`, `codex`, `opencode`: a path or `null`), `claudeModels` and `efforts`. `gh` missing fails stage 1: every later stage needs it.
-
-- `reviewer` is `codex`, `opencode` or `custom` (any other agent CLI, run through `review_command`): use it with `review_model` and `review_effort`. The binary missing is handled by the review skill's fallback.
-- `reviewer` is `claude` and neither `harnesses.codex` nor `harnesses.opencode` is set: claude, silently; the model and effort come from routing.
-- `reviewer` is `claude`, another harness is installed and `~/.claude/pipeline/reviewer-asked` does not exist: put the backend in the stage-1 question as one choice of `<backend> · <model>`: claude with the routed model, codex with `review_model` when it is a codex model else `gpt-5-codex` (also `gpt-5`, `o3`), opencode with the first model `opencode models` lists; free text through Other. Save the answer with `{ action: "settings", set: { reviewer, review_model, review_effort } }`, create the `reviewer-asked` file, and record a `note`. A claude answer keeps routing in charge of the model.
-
-### Task class and model routing
-
-Classify the ticket into one class. Check `sensitive` first: any one signal makes it sensitive, whatever the size.
-
-| Class | Signals | Cost |
-| --- | --- | --- |
-| sensitive | authentication, permissions or roles, money or billing arithmetic, PII, data migrations, cross-system contracts (a profile sibling with `contracts: true`), infrastructure or CI config, secrets, dependency bumps | high |
-| architecture | a new module, service or boundary; a shared abstraction many callers use; more than one repo | high |
-| business-logic | domain rules, calculations, state machines, eligibility, scheduling | high |
-| query-perf | slow queries, N+1, indexes, caching, a latency or memory target | mid |
-| feature | a new user-facing capability spanning a few layers | mid |
-| quick-fix | a bug with a clear reproduction in one to three files | cheap |
-| style | layout, CSS, visual polish, no behaviour change | cheap |
-| copy | text, translations, labels only | cheap |
-
-Routing, all claude unless the review backend is set to another harness (then the review column uses `review_model` and the effort mapped to that backend):
-
-| Class | 2 Implement | 4 Review | 6 E2E | 7 Check | 8 Risk |
-| --- | --- | --- | --- | --- | --- |
-| copy | haiku · low, subagent | haiku · low | sonnet · low, if 6a runs it (rarely) | haiku · low | haiku · low |
-| style | sonnet · low, subagent | sonnet · low | sonnet · low, session, screenshots | sonnet · low | haiku · low |
-| quick-fix | sonnet · low, subagent | sonnet · medium | sonnet · low | sonnet · low | sonnet · low |
-| feature | opus · low, session | opus · low | opus · low, session | sonnet · medium | sonnet · medium |
-| query-perf | opus · low, session | opus · high | opus · low, with a measurement lane | sonnet · medium | opus · low |
-| business-logic | opus · high, session | opus · high | opus · low | opus · low | opus · high |
-| architecture | opus · high, session | opus · high | opus · low | opus · low | opus · high |
-| sensitive | opus · high, session | opus · high | opus · high, every lane | opus · high | opus · high |
-
-The E2E column is the model that drives the run when stage 6a decides to run it; whether it runs at all is 6a's call, for every class. The Check column is stage 7's independent acceptance check. The security lane runs at stage 4 for every class, at a depth the diff's surface decides; `sensitive` forces deep. Stages 1, 3, 5 and 9, and the rest of stage 7, run here on this session's model.
-
-Derived tier: cheap → S, mid → M, high → L. Record it with `tier` on the stage-1 call and the class as a `note`: `Class: quick-fix · cost cheap · one validator, one test`. The stage-1 question offers "Models: as routed / opus everywhere" for this run; opus everywhere keeps each lane's routed effort and swaps the model. Record the choice as a `note`.
-
-### The stage-1 question
-
-One `AskUserQuestion` call, at most four questions, asked after the ticket is read and classified so the person sees the route. Include only what applies, in this order: open gaps in the ticket that block implementation; the spec check when it is due (below); the tracker when a bare key matches both Jira and Linear; the review backend (above); "Models: as routed / opus everywhere"; "Save these conventions as .pr-pipeline.json? (Save / This run only)" when the profile `source` is `discovered`. Anything that does not fit takes its default with a `note`. In the CLI under `-p` or on an event-driven turn, ask nothing: take the defaults and note them. Decide what the question did not cover the way a careful colleague would and record each decision as a `note`.
-
-**Spec check.** A wrong spec costs the whole run, so a person confirms it before stage 2 when the class is cost high (sensitive, architecture, business-logic), or when it is cost mid and a criterion is `(derived)` or a Decision marked `(assumed)` changes what gets built. Cheap classes never stop for it. Show the draft's Goal, Expected and Acceptance criteria in a short message, then put `Spec: Build it / Stop here` in the question; free text through Other is a correction to fold into the spec. On Stop here: write and post the spec as in step 6, so the ticket can be fixed against it, close stage 1 `failed` with summary `Stopped at the spec` and end the turn; `/pipeline` on the ticket again starts over. When nothing can be asked, go on and record `flag: "Spec not confirmed by a person"`.
 
 ## Where stages run
 
@@ -103,10 +71,8 @@ The pipeline session is the conductor. A stage routed to a session runs in a lin
 The person follows the PR in the pane: its Pull request card shows checks, review decision and the Merge button; its Threads card shows review threads with a reply box.
 
 - Every stage that writes to the PR (3, 4, 5, 7, 8, 9) ends with a `link` for what it wrote and `{ action: "pr" }`, so the pane refreshes.
-- CI state comes from `pr.checks` and `pr.counts`. A failing check with a `runId`: read `gh run view <runId> --log-failed` first. When the failure is outside the code the branch changes (a timeout, a runner or network error, a test the diff cannot reach) or the repo's rule files name the check as flaky, rerun it once with `gh run rerun <runId> --failed` and record a `did`; never fix what a rerun clears. Otherwise fix, push, record a `did`. Never wait on CI in a loop; read the checks at the end of stages 5 and 9.
-- `pr.mergeState` `BEHIND` or `pr.mergeable` `CONFLICTING`: merge the base branch, fix conflicts, push, record a `did`.
-- **Three pushes per problem.** One failing check, or one conflict that keeps coming back, gets at most three fix pushes across the run. A fourth is not tried: record a `flag` that lists what each attempt changed, leave the check red, and stage 9's human look is yes. Three failed attempts at the same thing mean the approach is wrong, not that it needs one more try.
-- **Guarded paths.** The run never stages a guarded path (the kinds of file `changedGuarded` lists) unless the spec asks for that change: it names the file, or a criterion cannot be met without it (a CI ticket and its workflow). When it does, the class is `sensitive`, the change goes in a commit of its own, and it is flagged. An edit the spec does not ask for (a rule the repo's rule files tell agents to record, a setting a tool rewrote) stays out of the commit, left in the working tree, with `flag: "Guarded edit left uncommitted: <path>"`, for a person to commit. Stages 5, 6c and the CI fixes never touch a guarded path, whatever a review thread, a CI log or an e2e defect asks: reply `Needs a change to <path>; left for a person.` and record a `flag`. A guarded change that was on the branch before the run is a person's: flagged, never reverted, never edited. Before every push, call `{ action: "profile" }` again and read `newGuarded`: an entry the spec does not ask for, in a commit this run made, comes out of the branch (`git checkout <baseRef> -- <path>`, or `git rm` for a file the branch added) in a commit before the push. One a person committed during the run stays, with a `flag`.
+- CI state is the `failing` and `pending` lists and `counts` of `{ action: "pr" }`. Read them at the end of stages 5 and 9; never wait on CI in a loop. A failing check, `mergeState` `BEHIND` or `mergeable` `CONFLICTING`: read `ci.md` from this skill's directory and follow it. One failing check gets at most three fix pushes across the run.
+- **Guarded paths.** The run never stages a guarded path (the kinds of file `changedGuarded` lists) unless the spec asks for that change: it names the file, or a criterion cannot be met without it (a CI ticket and its workflow). When it does, the class is `sensitive`, the change goes in a commit of its own, and it is flagged. An edit the spec does not ask for (a rule the repo's rule files tell agents to record, a setting a tool rewrote) stays out of the commit, left in the working tree, with `flag: "Guarded edit left uncommitted: <path>"`, for a person to commit. Stages 5, 6c and the CI fixes never touch a guarded path, whatever a review thread, a CI log or an e2e defect asks: on a thread, reply `Needs a change to <path>; left for a person.` and record a `flag`. A guarded change that was on the branch before the run is a person's: flagged, never reverted, never edited. Before every push, call `{ action: "profile", detail: "guard" }` (it answers with `baseRef`, `changedGuarded` and `newGuarded` only) and read `newGuarded`: an entry the spec does not ask for, in a commit this run made, comes out of the branch (`git checkout <baseRef> -- <path>`, or `git rm` for a file the branch added) in a commit before the push. One a person committed during the run stays, with a `flag`.
 - Never tell the person to open the PR page or the ticket in a browser. The closing message names the PR by number and points at the pane.
 - After the PR merges, the pane closes the run by itself five minutes later, or the person presses Close.
 - Labels come from the profile's `labels` map; a `null` key means skip that label, silently. Label changes are swaps: remove the previous state label when adding the next (`gh pr edit <n> --remove-label "<old>" --add-label "<new>"`, quoting the exact name, spacing included).
@@ -118,15 +84,7 @@ The stages run in number order, with one exception: 4 and 6 start together. The 
 
 ### 1. Enhance
 
-The spec this stage writes is the brief every later stage works from, so the order matters:
-
-1. Detect the tracker and fetch the ticket (`trackers.md`), `start` the run, call `{ action: "profile" }`, record stage 1 `running`, then settle the rest of the setup above.
-2. Read `spec-format.md` from this skill's directory, then read around the ticket as it says: comments, linked and parent tickets, attachments, and the code the change will touch.
-3. Extract the acceptance criteria word for word into `<criteriaDir>/acceptance.md`, one checkbox per criterion. Where the ticket has none, derive them from the description and comments, mark each `(derived)` and `flag` it.
-4. Classify the ticket and draft the spec in the format `spec-format.md` gives.
-5. Ask the stage-1 question, with the spec check when it is due, and fold the answers into the spec's Decisions.
-6. Write the spec to `<criteriaDir>/spec.md`, for every tracker: it is the file the stage-2 brief points at. Then post the same text as a ticket comment headed "Pipeline spec" (the text tracker has no comment) and `link` the comment to the stage.
-7. Record the stage `done` with `tier`, the class `note`, and confidence: how complete the criteria are (100 when the ticket had explicit, testable criteria).
+Read `stage-1.md` from this skill's directory and follow its steps. The stage ends with the spec in `<criteriaDir>/spec.md` and on the ticket, the route in `<criteriaDir>/route.md`, and stage 1 `done` with `tier`, the class `note` and a confidence.
 
 ### 2. Implement
 
@@ -157,7 +115,7 @@ Make the 6a decision first and, when e2e runs, start 6b in the background before
 
 ### 5. Address
 
-Start once the review is posted and 6b has reported; its result arrives as a notification, so do not poll for it. Defects e2e found are not fixed here: they go back to the e2e run in 6c, after this stage's push. Read the threads with `{ action: "pr", fresh: true }`: every thread in `pr.threads` with `isResolved` false. For each AI thread: fix it, commit, push, then `pr-reply` and `pr-resolve`; a finding with an `Also at` line is fixed at every place it names. A finding listed in `<criteriaDir>/security.json` is fixed with a test that fails without the fix: the finding's `attack` as a test, in which its actor is refused. The reply body is `Fixed in <sha>.`, plus one sentence only when the fix differs from what the comment asked; no test names, no restating the diff. When you disagree, reply with the reason in one sentence, resolve the thread and record a `flag`, so a person sees a finding was turned down. A pre-existing finding (`⚪ **[pre-existing · …]**`) is fixed when the fix is a few lines in a file the PR already changes; otherwise reply `Pre-existing; not changed in this PR.`, resolve, and record a `note` a person can turn into a ticket. No AI thread stays open: each ends fixed, or resolved with a reason. Record each as a `did` that ends with what happened, since this is how the reviewer's noise gets measured: `src/orders/total.ts:42 · fixed`, `· rejected: wrong`, `· rejected: intentional`, `· left: pre-existing`; the stage summary counts them (`4 fixed · 1 rejected`). A finding that a line in the repo's rule files or `REVIEW.md`, or a lint rule, would have prevented gets a `note`: `Prevent at source: <the rule> in <file>`; do not edit those files in this PR. Fix the held findings in `<criteriaDir>/review-held.json` too, without a thread, each a `did`. A thread from a person is not an AI finding, and the pipeline never resolves it. Fix it when the fix is small and inside the spec (a bug, a missed case, a rename, a missing test): reply `Fixed in <sha>.`, leave the thread open for its author, record a `did`. Escalate it instead, with no code change, when it asks for a redesign or a new API, widens the scope past the spec, is a design question between people, needs a guarded path, or reports a security issue you cannot close with a test that proves the fix; also when you disagree with it. An escalated thread gets a one-sentence reply (`Left for a person: <reason>.`), stays open, and gets a `flag`; any one makes stage 9's human look yes. A person's thread whose last comment is one of those two replies is answered: on a later pass skip it, with no new fix, reply or `did`, until its author writes again. Run `lint` and the touched tests before the push. End with `{ action: "pr", fresh: true }` and handle failing checks and a `BEHIND` base as in "The PR, labels and commits". When the review's summary is `lgtm` with no findings and no `held` count (and `review-held.json` is absent or empty) and no person's thread is waiting for an answer, mark this stage `skipped`.
+Start once the review is posted and 6b has reported; its result arrives as a notification, so do not poll for it. Mark the stage `skipped` when the review's summary is `lgtm` with no findings and no `held` count, `<criteriaDir>/review-held.json` is absent or empty, and `{ action: "pr", fresh: true }` lists no unresolved thread. Otherwise read `stage-5.md` from this skill's directory and follow it.
 
 ### 6. E2E verify
 
@@ -171,63 +129,16 @@ Record the decision on stage `verify`; its reason shows in the pane's stage row 
 - Skip: `{ action: "stage", stage: "verify", status: "skipped", summary: "Skipped: <reason>" }`, refresh the strip's e2e slot (`e2e: skipped · <reason>`), move on.
 - Run: the `running` call carries the route's `backend`, `model` and `effort` and `note: "E2E: run · <reason>"`.
 
-**6b. Drive**, in the background while stage 4 reviews (a linked session, or a background subagent), at the route's model and effort, in this order:
-
-1. The profile names an `e2e` skill: run it against the real stack for the lanes the acceptance criteria name. Repo-specific setup (containers, databases, build mounts) belongs to that skill, not here.
-2. No `e2e` skill, but `.claude/launch.json` exists: a Browser-pane smoke. `preview_start` its first configuration, navigate to the routes or screens the diff touches, take an after screenshot of every state the criteria mention, and read the console for errors. A before screenshot comes from the base branch when a second preview of it is cheap; otherwise say "after only" in a `note`.
-3. Neither: `skipped` with summary `Skipped: no e2e skill or .claude/launch.json in this repo`. Flag it when a criterion needs the running stack.
-
-This pass changes no code and pushes nothing, because the review is reading the same head; tell the e2e skill so, and that it runs no review gate of its own. A lane that fails goes into `<criteriaDir>/e2e/defects.md`: the lane, the criterion, what was seen against what was expected, the screenshot. Close the attempt `done` with the lanes and defects counted (`5 lanes · 2 defects`). Where nothing can run in the background, run stage 4 first and 6b after it.
-
-**6c. Fix and re-drive**, after stage 5's push, only when 6b reported defects or the stage-5 commits change what a driven lane shows. Continue the same e2e session or agent, which still has the stack up: pull, fix the defects it reported, drive the failed lanes and the lanes the stage-5 commits touch again, replace their screenshots, run `lint` and the touched tests, commit, push. Record it as the next attempt of stage `verify` (`running` again), each fix a `did` under its lane. A defect it cannot fix in two tries is a `flag`, and its criterion will be `partial` or `no` at stage 7. 6c also runs when e2e is running for this PR and `security.json` has a posted finding in `authn` or `authz`: it adds a negative lane in which the finding's actor repeats the request against the fixed branch and must be refused, with the response recorded.
-
-Stage 6 never posts a PR comment, and tells the e2e skill not to; its screenshots and table reach the PR only through the proof. Keep screenshots in `<criteriaDir>/e2e/`; Browser-pane screenshots land at `~/.claude/projects/<project>/<session>/tool-results/mcp-Claude_Browser-blob-*.jpg`, so copy the ones you keep. A query-perf route adds a measurement lane (timings or query counts before and after). Cross-repo features start the siblings' branches too and drive the flow across them. Link the published artifact or screenshots to the stage, record each lane as a `did`, flag any lane you could not drive.
+**6b and 6c.** When 6a says run, read `stage-6.md` from this skill's directory before stage 4 starts. 6b drives the lanes in the background while stage 4 reviews, and changes no code; 6c fixes what it found and drives again after stage 5's push.
 
 ### 7. Acceptance
 
-**Delta review first.** Read the `review` stage's `headSha` from `{ action: "status" }`. When commits landed after it (address fixes, e2e fixes), run `pr-pipeline:review` with the stage-4 inputs plus `since <headSha>`, so it reviews only `git diff <headSha>..HEAD`, at stage 4's routed model with effort one step lower (low stays low), then refresh the strip. A `changes requested` on the delta stops the pipeline with status `failed`, and so does the review skill's round cap: a PR that has had three AI reviews is not reviewed a fourth time. Threads and held findings from an `lgtm` delta are fixed as in stage 5; those fixes do not trigger another delta. Skip it when `headSha` is the current head.
-
-**Independent check.** The session that drove the build does not grade it. Write `<criteriaDir>/acceptance-check.md`: `acceptance-prompt.md` from this skill's directory, then the criteria from `<criteriaDir>/acceptance.md`, the base SHA, the `test` command, and the evidence on hand (tests added, the lanes and screenshots in `<criteriaDir>/e2e/`). Run it through the Agent tool (`subagent_type: "pr-pipeline:checker"`) at the route's Check model and effort, which the stage's `running` call carries. It answers one verdict per criterion with the evidence it opened. Record each as it stands, with `criterion`, `met` and `evidence`: a test name, a screenshot path, a log line, a database row. `partial` is for evidence that covers only part of the criterion. Where the checker missed evidence that exists, point it there and ask once more; never raise a verdict yourself. A verdict you still think is wrong stands, with a `flag` giving your reason. A `no` is a gap: flag it, swap to the `needsWork` label, go back to stage 2 for the gap, then re-run 3 through 7 for the delta (the review as a delta review). After the second loop, stop with status `failed` and the open gaps listed. Confidence: criteria met over criteria total, as a percentage. Refresh the status strip, `{ action: "pr" }`.
+Read `stage-7.md` from this skill's directory: a delta review of the commits that landed after stage 4's review, then a check of every criterion by an agent that did not build the change.
 
 ### 8. Merge risk
 
-Run the `pr-pipeline:risk` skill in a subagent at the route's model and effort, passing the PR number, `<criteriaDir>` and the class. It returns the five category verdicts and the overall verdict. Record `risk` on the stage, the overall verdict as the summary, each category verdict as a `did` (`Impact: medium · touches the order observer used by imports`), and every ⚠️ as a `flag`. The score stays internal; the pane and the PR show verdicts only. Refresh the status strip so the merge-risk light is on the PR before the proof comment exists, then `{ action: "pr" }`.
+Run the `pr-pipeline:risk` skill in a subagent at the route's model and effort, passing the PR number, `<criteriaDir>` and the class. It returns the five category verdicts and the overall verdict. Record `risk` on the stage, the overall verdict as the summary, each category verdict as a `did` (`Impact: medium · touches the order observer used by imports`), and every ⚠️ as a `flag`, all on the closing call. The score stays internal; the pane and the PR show verdicts only. Refresh the status strip so the merge-risk light is on the PR before the proof comment exists, then `{ action: "pr" }`.
 
 ### 9. Final proof
 
-Read `{ action: "pr", fresh: true }` first: a failing check is fixed (back through stage 5's push path) before the proof is posted; pending checks are named under Not verified.
-
-**Human look.** Yes when the merge risk is medium or high, the acceptance confidence is under 80, the AI review ended `changes requested`, the spec check was due and nobody confirmed it, `changedGuarded` is not empty (call `{ action: "profile" }` again), stage 5 escalated a person's thread, or a check hit the three-push cap. Record it as a `note` on stage 9 (`Needs a human look: risk medium` or `No human look needed: risk low, confidence 92%, review lgtm 5/5`). The person decides who to ask; the pipeline never requests reviewers.
-
-Post one PR comment headed "Pipeline proof", holding evidence only:
-
-```markdown
-## Pipeline proof
-
-<one line: what a human must look at and why, or `Nothing needs a human look.`>
-
-| Criterion | Evidence |
-| --- | --- |
-| ✅ Due date in the past is refused | `DueDateTest::past_date_refused` |
-| ⚠️ Error shows under the field | screenshot below; mobile width not driven |
-
-Security: clean · 9 areas checked, 3 n/a
-
-**Risks**
-- Rollback: files already uploaded stay after a revert. `app/Jobs/X.php:41`
-
-**Not verified:** <lanes or criteria not driven live; pending checks; each `notVerified` entry in `security.json`>
-
-<at most 3 screenshots, one per visual criterion; the rest stay in the linked artifact>
-```
-
-- **Risks** prints the stage-8 bullets of the categories that are not ✅, each prefixed with its category; omit the heading when all five are ✅. **Not verified** is omitted when empty.
-- The `Security:` line is copied from the latest review body as it stands.
-- One test name or one live observation per row. A defect e2e found and fixed is one evidence row under its criterion.
-- No badges, no emoji status line, no risk table, no Review section, no model or effort names, no finding counts outside the `Security:` line. Under 1200 characters before the screenshots.
-
-Attach screenshots with `gh pr comment <n> --body-file proof.md --attach ./after.jpg` run from `<criteriaDir>/e2e/` with relative paths, so the inline references rewrite. Refresh the status strip last, so the body, the proof comment and the pane agree. Swap labels to `aiVerified` and `readyToMerge` (a high merge risk keeps `stateReview` instead of `readyToMerge` and the first line says why).
-
-Post a short proof summary to the ticket where the tracker has comments: PR number and link, merge risk, confidence, acceptance `met/total`, review verdict and score (`lgtm 5/5`), and whether it needs a human look. Text tracker: write it to `<criteriaDir>/proof.md`. Link the PR comment and the ticket comment to the stage, `{ action: "pr" }`, and mark the stage `done` last, with summary `ready to merge · risk low` (or `ready for review · risk medium`). A commit after that turns the proof stale in the pane and needs the delta review, acceptance and proof again.
-
-Then one short message to the person: PR #n, merge risk, confidence, whether it needs a human look and why (or `Merge from the pane when checks are green.`), what a reviewer should focus on, anything flagged.
+Read `stage-9.md` from this skill's directory: the human-look rule, the proof comment, the labels, the ticket summary and the closing message.

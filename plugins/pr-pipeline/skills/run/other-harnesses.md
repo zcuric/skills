@@ -28,12 +28,15 @@ One heading per stage attempt (`## 4 review (2)` for the second), with status, s
 
 | The skills say | Here |
 | --- | --- |
-| `{ action: "start" }`, `stage`, `link`, `unlink`, `close` | Write the line to `run.md`. |
-| `{ action: "status" }` | Read `run.md`. |
+| `{ action: "start" }`, `stage`, `link`, `unlink`, `close` | Write the line to `run.md`. A `did`, `flag` or `note` list is one line per item. |
+| `{ action: "status" }`, with any `detail` | Read `run.md`. |
+| `{ action: "profile", detail: "guard" }` | Only the `changedGuarded` and `newGuarded` part of the row below. |
 | `{ action: "profile" }` | Read `.pr-pipeline.json`, else `.claude/pr-pipeline.json`; one the branch changes is read with `git show origin/<base>:<file>`, one it adds is ignored. `<base>` is the PR's `baseRefName` once there is a PR, else the default branch; run `git fetch origin <base>` first. `changedGuarded` is `git diff --name-only --no-renames $(git merge-base origin/<base> HEAD)` filtered to rule files, `REVIEW.md`, `CODEOWNERS`, `.claude/`, `.github/`, `.ai/rules/`, git hooks, the profile and secret-shaped files. Write the first list to `run.md` as `note: Guarded at start: <paths or none>`; `newGuarded` is every later entry that is not in that note. Without a profile file, discover: `gh repo view --json nameWithOwner,defaultBranchRef`, `gh label list`, the lint and test commands in the build files, the rule files that exist (`AGENTS.md`, `CLAUDE.md`, `.ai/rules/index.md`). Fill the rest from the defaults in the plugin's `profiles/pr-pipeline.schema.json`. `criteriaDir` defaults to `~/.claude/pipeline/{owner}-{repo}/{ticket}`; create it. Offer to save a discovered profile in the stage-1 question. |
 | `{ action: "settings" }` | There are no plugin settings. The reviewer is a fresh run of this harness (below) unless the person names another; tracker `auto`; merge method `squash`. Find other CLIs with `command -v`. |
-| `{ action: "pr" }` | `gh pr view <n> --json state,isDraft,mergeable,mergeStateStatus,reviewDecision,statusCheckRollup,headRefOid`. Threads: the GraphQL query below. |
-| `pr-reply`, `pr-resolve` | The two GraphQL mutations below. |
+| `{ action: "pr" }` | `gh pr view <n> --json state,isDraft,mergeable,mergeStateStatus,reviewDecision,statusCheckRollup,headRefOid`. With `detail: "threads"`, or wherever a skill reads thread titles: the GraphQL query below. |
+| `pr-reply`, `pr-resolve` | The two GraphQL mutations below; `resolve: true` on a reply is both, the reply first. |
+| "read `<file>.md` from this skill's directory" | The same files, read at the same moments. |
+| The definition gate's product exploration and design pass | A subagent as two rows down, or this session; the notes, the question and the flag are the same. |
 | ToolSearch, "the tool is deferred" | Nothing to load. |
 | `AskUserQuestion` | Ask in chat, one message, the same items in the same order, once. In a non-interactive run take the defaults and note them. |
 | Agent tool, `start_session`, "session" or "subagent" in the routing table | The harness's own subagent when it has one; else a fresh non-interactive run of its CLI with the brief as the prompt (`codex exec`, `opencode run`); else this session. The brief is the same either way. |

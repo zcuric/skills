@@ -144,6 +144,20 @@ test('the pane closes when the session\'s last run closes, and stays open when i
   expect(closed).toEqual(['pr-pipeline'])
 })
 
+test('/pipeline with a ticket answers, opens the pane and submits the run prompt after the command returns', async ($, on) => {
+  const { clock, opened, prompts } = boot(on)
+  mock.store(on)
+  await $.session.start(START)
+
+  const answer = await $.command.run({ command: 'pipeline', args: 'ABC-123', origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 80 } })
+  expect(answer.text).toBe('Pipeline started for ABC-123.')
+  expect(opened).toEqual(['pr-pipeline'])
+  expect(prompts).toEqual([])
+
+  await clock.advance(1)
+  expect(prompts).toEqual(['Run the pr-pipeline:run skill for ABC-123 (tracker: jira).'])
+})
+
 test('tick leaves another session\'s run alone while any session fetched it within six hours, and polls it after', async ($, on) => {
   const { calls, clock } = boot(on, prRoutes({ view: prView({ number: 43, url: 'https://github.com/o/r/pull/43' }), threads: [] }))
   sharedStore(on, {

@@ -4,7 +4,7 @@ import type { Engine } from 'claude-code/testing'
 import { boot, PANE, PR_URL, START, TOOL } from './kit'
 
 const runOf = async ($: Engine, branch: string) => {
-  const answer = await $.tool.call({ tool: TOOL, action: 'status', branch })
+  const answer = await $.tool.call({ tool: TOOL, action: 'status', branch, detail: 'full' })
   return answer.deny !== undefined ? null : JSON.parse(String(answer.result))
 }
 
@@ -26,7 +26,7 @@ test('a run moves through stages and is written to the store', async ($, on) => 
   await $.tool.call({ tool: TOOL, action: 'stage', branch: 'feature/hwepd-1', stage: 'risk', status: 'done', summary: 'low', risk: 'low' })
   await $.tool.call({ tool: TOOL, action: 'link', branch: 'feature/hwepd-1', stage: 'pr', label: 'Pull request', href: 'https://github.com/o/r/pull/7' })
 
-  const status = await $.tool.call({ tool: TOOL, action: 'status', branch: 'feature/hwepd-1' })
+  const status = await $.tool.call({ tool: TOOL, action: 'status', branch: 'feature/hwepd-1', detail: 'full' })
   const run = JSON.parse(String(status.result))
   expect(run.ticket).toBe('HWEPD-1')
   expect(run.prUrl).toBe('https://github.com/o/r/pull/7')
@@ -65,7 +65,7 @@ test('a stored run is shown again after a reload', async ($, on) => {
     },
   })
   await $.session.start(START)
-  const status = await $.tool.call({ tool: TOOL, action: 'status', branch: 'feature/hwepd-9' })
+  const status = await $.tool.call({ tool: TOOL, action: 'status', branch: 'feature/hwepd-9', detail: 'full' })
   const run = JSON.parse(String(status.result))
   expect(run.ticket).toBe('HWEPD-9')
   expect(run.stages).toHaveLength(9)
@@ -114,7 +114,7 @@ test('a link to a PR comment does not replace the PR url, and a repeated href is
   await $.tool.call({ tool: TOOL, action: 'link', branch: 'b', stage: 'pr', label: 'Pull request #7', href: 'https://github.com/o/r/pull/7' })
   await $.tool.call({ tool: TOOL, action: 'link', branch: 'b', stage: 'proof', label: 'Proof', href: 'https://github.com/o/r/pull/7#issuecomment-1' })
 
-  const run = JSON.parse(String((await $.tool.call({ tool: TOOL, action: 'status', branch: 'b' })).result))
+  const run = JSON.parse(String((await $.tool.call({ tool: TOOL, action: 'status', branch: 'b', detail: 'full' })).result))
   expect(run.prUrl).toBe('https://github.com/o/r/pull/7')
   expect(run.stages.find((stage: { id: string }) => stage.id === 'pr').links).toEqual([{ label: 'Pull request #7', href: 'https://github.com/o/r/pull/7' }])
 })
@@ -355,4 +355,60 @@ test('a running call without a model records the session model by family name', 
   expect(run.models.enhance).toEqual({ backend: 'claude', model: 'opus', effort: 'high' })
   expect(run.models.implement).toEqual({ backend: 'claude', model: 'sonnet' })
   expect(run.models.review).toEqual({ backend: 'codex', model: 'gpt-5-codex' })
+})
+
+test('status answers each stage cut to status, verdict, flags and counts; detail full answers the whole run', async ($, on) => {
+  boot(on)
+  mock.store(on)
+  await $.session.start(START)
+  await $.tool.call({ tool: TOOL, action: 'start', branch: 'feature/sum', ticket: 'HWEPD-5', title: 'Summary', tier: 'S' })
+  await $.tool.call({ tool: TOOL, action: 'stage', branch: 'feature/sum', stage: 'enhance', status: 'running' })
+  await $.tool.call({ tool: TOOL, action: 'stage', branch: 'feature/sum', stage: 'enhance', status: 'done', summary: '3 criteria', confidence: 88, did: ['Read the ticket', 'Wrote criteria'], note: 'Scope cut', flag: 'No design' })
+  await $.tool.call({ tool: TOOL, action: 'stage', branch: 'feature/sum', stage: 'acceptance', criterion: 'Saves', met: 'yes' })
+  await $.tool.call({ tool: TOOL, action: 'link', branch: 'feature/sum', stage: 'enhance', label: 'Ticket', href: 'https://example.com/HWEPD-5' })
+
+  const summary = JSON.parse(String((await $.tool.call({ tool: TOOL, action: 'status', branch: 'feature/sum' })).result))
+  expect(summary).toMatchObject({ ticket: 'HWEPD-5', title: 'Summary', tier: 'S', branch: 'feature/sum' })
+  expect(summary.stages[0]).toEqual({ id: 'enhance', status: 'done', summary: '3 criteria', confidence: 88, flags: ['No design'], did: 2, notes: 1 })
+  expect(summary.stages.find((stage: { id: string }) => stage.id === 'acceptance')).toEqual({ id: 'acceptance', status: 'pending', criteria: 1 })
+  expect(summary.stages.find((stage: { id: string }) => stage.id === 'proof')).toEqual({ id: 'proof', status: 'pending' })
+
+  const full = await stageOf($, 'feature/sum', 'enhance')
+  expect(full.did).toEqual(['Read the ticket', 'Wrote criteria'])
+  expect(full.links).toEqual([{ label: 'Ticket', href: 'https://example.com/HWEPD-5' }])
+  expect(full.startedAt).toBeDefined()
+})
+
+test('did, flag and note take a list, skip empty strings, and the answer counts them', async ($, on) => {
+  boot(on)
+  mock.store(on)
+  await $.session.start(START)
+  await $.tool.call({ tool: TOOL, action: 'start', branch: 'b' })
+
+  const many = await $.tool.call({ tool: TOOL, action: 'stage', branch: 'b', stage: 'implement', did: ['One', '', 'Two', 'Three'], flag: 'Watch out', note: [] })
+  expect(many.result).toBe('Stage implement updated (+3 did, flag).')
+  const none = await $.tool.call({ tool: TOOL, action: 'stage', branch: 'b', stage: 'implement', did: '', note: [''] })
+  expect(none.result).toBe('Stage implement updated.')
+  await $.tool.call({ tool: TOOL, action: 'stage', branch: 'b', stage: 'implement', note: ['A', 'B'], did: 'Four' })
+
+  const implement = await stageOf($, 'b', 'implement')
+  expect(implement.did).toEqual(['One', 'Two', 'Three', 'Four'])
+  expect(implement.flags).toEqual(['Watch out'])
+  expect(implement.notes).toEqual(['A', 'B'])
+})
+
+test('detail is refused outside the actions it belongs to', async ($, on) => {
+  boot(on)
+  mock.store(on)
+  await $.session.start(START)
+  await $.tool.call({ tool: TOOL, action: 'start', branch: 'b' })
+  const call = (action: string, detail: string, extra: Record<string, unknown> = {}) =>
+    $.tool.call({ tool: TOOL, action, branch: 'b', detail, ...extra }).then(answer => answer.deny)
+
+  expect(await call('status', 'all')).toBe('pr-pipeline: "detail" must be one of summary, threads, full, guard.')
+  expect(await call('status', 'threads')).toBe('pr-pipeline: "detail" threads is for pr only, not status.')
+  expect(await call('pr', 'guard')).toBe('pr-pipeline: "detail" guard is for profile only, not pr.')
+  expect(await call('profile', 'full')).toBe('pr-pipeline: "detail" full is for status and pr only, not profile.')
+  expect(await call('stage', 'summary', { stage: 'implement' })).toBe('pr-pipeline: "detail" summary is for status and pr only, not stage.')
+  expect(await call('profile', 'guard', { save: true })).toBe('pr-pipeline: "detail" guard cannot go with "save": true; save without it.')
 })
