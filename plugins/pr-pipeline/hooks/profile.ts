@@ -6,6 +6,16 @@ import { gh, git, runCommand } from './github'
 export const PROFILE_FILES = ['.pr-pipeline.json', '.claude/pr-pipeline.json'] as const
 const RULE_FILES = ['CLAUDE.md', 'AGENTS.md', '.ai/rules/index.md']
 const THREAT_MODEL_FILES = ['SECURITY-REVIEW.md', '.claude/security-review.md', 'docs/security-review.md']
+/** Files that set the rules for agents, reviewers and CI, plus secret-shaped files: never taken from a PR's own head, never committed by a fix. */
+const GUARDED_PATHS: readonly RegExp[] = [
+  /(^|\/)(CLAUDE|AGENTS|REVIEW)\.md$/,
+  /(^|\/)CODEOWNERS$/,
+  /^\.(claude|github|ai\/rules|githooks|husky)\//,
+  /^\.pr-pipeline\.json$/,
+  /(^|\/)\.env(\.(?!example$|sample$|dist$)[^/]+)?$/,
+  /\.(pem|key|p12|pfx)$/,
+  /(^|\/)id_(rsa|dsa|ecdsa|ed25519)(\.pub)?$/,
+]
 const DEFAULT_BRANCH_PATTERN = '{type}/{key}-{slug}'
 const DEFAULT_CRITERIA_DIR = '~/.claude/pipeline/{owner}-{repo}/{ticket}'
 const TICKET_KEY = /^[A-Z][A-Z0-9]+-\d+$/i
@@ -38,6 +48,14 @@ type Found = Partial<RepoProfile> & { base?: string }
 export type ProfileResult = {
   source: 'file' | 'discovered'
   path?: string
+  /** The profile file is tracked and the PR changes it, so its text came from `baseRef`. */
+  fromBase?: boolean
+  /** `origin/<base>`, when the base branch is known and fetched. */
+  baseRef?: string
+  /** Guarded files the branch changes against its merge base with `baseRef`; present whenever `baseRef` is. */
+  changedGuarded?: string[]
+  /** The `changedGuarded` entries that were not there at the run's first profile call: the run's own, not a person's. */
+  newGuarded?: string[]
   discovered?: string
   base?: string
   saved?: string
@@ -67,6 +85,10 @@ async function exists($: EngineInterface, path: string): Promise<boolean> {
 /** Lower case, emoji shortcodes and pictographs dropped, whitespace collapsed. */
 export const normaliseLabel = (name: string): string =>
   name.toLowerCase().replace(/:[a-z0-9_+-]+:/g, ' ').replace(/\p{Extended_Pictographic}/gu, ' ').replace(/\s+/g, ' ').trim()
+
+/** A rule-setting or secret-shaped path, or one of `extra` (the profile's rule files and threat model). */
+export const isGuardedPath = (path: string, extra: readonly string[] = []): boolean =>
+  extra.includes(path) || THREAT_MODEL_FILES.includes(path) || GUARDED_PATHS.some(pattern => pattern.test(path))
 
 const escape = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 
@@ -176,7 +198,9 @@ const repoArgs = (target: RepoTarget): string[] => (target.slug !== undefined ? 
 
 const ghOptions = (target: RepoTarget) => ({ cwd: target.root, ...(target.host !== undefined ? { host: target.host } : {}) })
 
-async function discoverRepo($: EngineInterface, target: RepoTarget): Promise<{ base?: string; mergeMethod?: MergeMethod }> {
+type RepoFacts = { base?: string; mergeMethod?: MergeMethod }
+
+async function discoverRepo($: EngineInterface, target: RepoTarget): Promise<RepoFacts> {
   const argv = ['repo', 'view', ...(target.slug !== undefined ? [target.slug] : []), '--json', 'nameWithOwner,defaultBranchRef,squashMergeAllowed,rebaseMergeAllowed,mergeCommitAllowed']
   const viewed = await gh($, argv, ghOptions(target))
   if (!viewed.ok) return {}
@@ -202,9 +226,8 @@ async function discoverBranchPattern($: EngineInterface, target: RepoTarget): Pr
   return branchPatternOf(refs)
 }
 
-async function discover($: EngineInterface, target: RepoTarget): Promise<{ found: Found; summary: string }> {
-  const [repo, labels, branchPattern, checks, rules, hasE2e, threatModel] = await Promise.all([
-    discoverRepo($, target),
+async function discover($: EngineInterface, target: RepoTarget, repo: RepoFacts): Promise<{ found: Found; summary: string }> {
+  const [labels, branchPattern, checks, rules, hasE2e, threatModel] = await Promise.all([
     discoverLabels($, target),
     discoverBranchPattern($, target),
     discoverChecks($, target.root),
@@ -307,26 +330,56 @@ async function repoRoot($: EngineInterface, cwd: string): Promise<string> {
   return root === '' ? cwd : root
 }
 
-async function readProfileFile($: EngineInterface, root: string): Promise<{ path: string; given: Found } | { path: string; error: string } | null> {
+type Baseline = { baseRef: string; changed: string[] }
+
+/**
+ * `origin/<base>`, fetched first so a stale ref never passes the base's own commits off as the branch's, and the files the
+ * checkout changes against its merge base with it (tracked files, committed or not); null when either is unknown.
+ */
+async function readBaseline($: EngineInterface, root: string, base: string | undefined): Promise<Baseline | null> {
+  if (base === undefined) return null
+  const baseRef = `origin/${base}`
+  await git($, ['fetch', '--quiet', 'origin', base], root)
+  const verified = await git($, ['rev-parse', '--verify', '--quiet', baseRef], root)
+  if (!verified.ok) return null
+  const mergeBase = await git($, ['merge-base', baseRef, 'HEAD'], root)
+  const forkPoint = mergeBase.ok ? mergeBase.stdout.trim() : ''
+  if (forkPoint === '') return null
+  const diff = await git($, ['diff', '--name-only', '--no-renames', forkPoint], root)
+  if (!diff.ok) return null
+  return { baseRef, changed: diff.stdout.split('\n').map(line => line.trim()).filter(line => line !== '') }
+}
+
+/** The profile file's text: from `baseRef` when the branch changes a tracked one (null when the branch added it), else the working tree's. */
+async function profileText($: EngineInterface, root: string, name: string, baseline: Baseline | null): Promise<{ text: string | null; fromBase: boolean }> {
+  if (baseline === null || !baseline.changed.includes(name)) return { text: await readText($, `${root}/${name}`), fromBase: false }
+  const shown = await git($, ['show', `${baseline.baseRef}:${name}`], root)
+  return { text: shown.ok ? shown.stdout : null, fromBase: true }
+}
+
+async function readProfileFile(
+  $: EngineInterface,
+  root: string,
+  baseline: Baseline | null,
+): Promise<{ path: string; given: Found; fromBase: boolean } | { path: string; error: string } | null> {
   for (const name of PROFILE_FILES) {
     const path = `${root}/${name}`
-    const text = await readText($, path)
+    const { text, fromBase } = await profileText($, root, name, baseline)
     if (text === null) continue
     const parsed = parseJson(text)
     if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return { path, error: `${name} is not a JSON object` }
     const { $schema: _schema, ...given } = parsed as Found & { $schema?: string }
-    return { path, given }
+    return { path, given, fromBase }
   }
   return null
 }
 
 /** The base branch, and the fields a profile file left out whose default is the repo's own: lint, test, rules, threat model, merge method. */
-async function fillFromRepo($: EngineInterface, given: Found, target: RepoTarget): Promise<Found> {
+async function fillFromRepo($: EngineInterface, given: Found, target: RepoTarget, repo: RepoFacts): Promise<Found> {
   const needsChecks = given.lint === undefined || given.test === undefined
   const checks = needsChecks ? await discoverChecks($, target.root) : { lint: [], test: [], sources: [] }
   const rules = given.rules === undefined ? await discoverRules($, target.root) : given.rules
   const threatModel = given.threatModel === undefined ? await discoverThreatModel($, target.root) : given.threatModel
-  const repo = await discoverRepo($, target)
   const mergeMethod = given.mergeMethod ?? repo.mergeMethod
   return {
     ...given,
@@ -342,17 +395,22 @@ async function fillFromRepo($: EngineInterface, given: Found, target: RepoTarget
 export type ProfileOutcome = { ok: true; result: ProfileResult } | { ok: false; error: string }
 
 /** Resolves the repo profile of a run: a profile file, else discovery; defaults fill the rest; creates the criteria dir. */
-export async function resolveProfile($: EngineInterface, run: PipelineRun, options: { save?: boolean } = {}): Promise<ProfileOutcome> {
+/** `prBase` is the base branch of the run's PR: a stacked PR is measured against its parent, not the default branch. */
+export async function resolveProfile($: EngineInterface, run: PipelineRun, options: { save?: boolean; prBase?: string } = {}): Promise<ProfileOutcome> {
   const cwd = run.cwd ?? (await $.session.cwd())
   const root = await repoRoot($, cwd)
   const target: RepoTarget = { root, ...(run.repo !== undefined ? { slug: run.repo } : {}), ...(run.host !== undefined ? { host: run.host } : {}) }
-  const file = await readProfileFile($, root)
+  const repo = await discoverRepo($, target)
+  const base = options.prBase ?? repo.base
+  const baseline = await readBaseline($, root, base)
+  const file = await readProfileFile($, root, baseline)
   if (file !== null && 'error' in file) return { ok: false, error: `${file.path}: ${file.error}` }
   if (file !== null && options.save === true) return { ok: false, error: `${file.path} already exists; save is refused.` }
 
-  const discovery = file === null ? await discover($, target) : null
-  const given = file !== null ? await fillFromRepo($, file.given, target) : discovery?.found ?? {}
+  const discovery = file === null ? await discover($, target, repo) : null
+  const given = file !== null ? await fillFromRepo($, file.given, target, repo) : discovery?.found ?? {}
   const profile = withDefaults(given, { ...(run.tracker !== undefined && run.tracker !== 'pr' ? { tracker: run.tracker } : {}) })
+  const ruleFiles = [...profile.rules, ...(profile.threatModel !== null ? [profile.threatModel] : [])]
   const home = await $.env.get('HOME').catch(() => undefined)
   const criteriaDir = expandCriteriaDir(profile.criteriaDir, { home, root, slug: run.repo, ticket: run.ticket ?? run.branch })
   await runCommand($, ['mkdir', '-p', criteriaDir], {})
@@ -368,8 +426,10 @@ export async function resolveProfile($: EngineInterface, run: PipelineRun, optio
     result: {
       source: file !== null ? 'file' : 'discovered',
       ...(file !== null ? { path: file.path } : {}),
+      ...(file !== null && file.fromBase ? { fromBase: true } : {}),
+      ...(baseline !== null ? { baseRef: baseline.baseRef, changedGuarded: baseline.changed.filter(path => isGuardedPath(path, ruleFiles)) } : {}),
       ...(discovery !== null ? { discovered: discovery.summary } : {}),
-      ...(given.base !== undefined ? { base: given.base } : {}),
+      ...(base !== undefined ? { base } : {}),
       ...(saved !== undefined ? { saved } : {}),
       profile,
       criteriaDir,

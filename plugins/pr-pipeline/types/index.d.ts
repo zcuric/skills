@@ -163,6 +163,8 @@ export type PipelineRun = {
   criteriaDir?: string
   /** The repo profile's merge method, set by the profile action; the pane's Merge button prefers it */
   mergeMethod?: MergeMethod
+  /** The guarded files the branch already changed at the run's first profile call: a person's, never reverted by the run */
+  guardedAtStart?: string[]
   /** Set when the PR was first seen MERGED; the run closes itself five minutes later */
   mergedAt?: number
   /** Closed runs leave the pane's run lists; status still returns them */

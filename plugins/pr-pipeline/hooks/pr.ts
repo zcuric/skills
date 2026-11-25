@@ -229,7 +229,10 @@ export const riskPrompt = (run: PipelineRun, ref: PrRef): string =>
 export const fixCiPrompt = (ref: PrRef, runIds: string[]): string => {
   const commands = runIds.map(runId => `\`gh run view ${runId} --log-failed --repo ${ref.slug}\``).join(', ')
   const source = commands === '' ? `the failing checks of PR #${ref.number}` : commands
-  return `CI is failing on PR #${ref.number} (repo ${ref.slug}). Read the failing logs with ${source}, fix the cause, commit and push, then record a did on the address stage of the pipeline.`
+  return `CI is failing on PR #${ref.number} (repo ${ref.slug}). Read the failing logs with ${source} first. ` +
+    'A failure outside the code the branch changes (a timeout, a runner or network error, a test the diff cannot reach) gets one rerun (gh run rerun <runId> --failed), not a fix. ' +
+    'Otherwise fix the cause, commit and push, without changing a workflow or rule file. After three fix pushes for the same check, stop and list what each one changed. ' +
+    'Record a did on the address stage of the pipeline.'
 }
 
 export const syncPrompt = (ref: PrRef, snapshot: PrSnapshot): string =>
@@ -254,7 +257,9 @@ export function staleVerdictText(run: PipelineRun, snapshot: PrSnapshot): string
 export const fixThreadPrompt = (thread: PrThread): string => {
   const first = thread.comments[0]
   const where = `${thread.path}${thread.line !== null ? `:${thread.line}` : ''}`
-  return `Address the review comment at ${first?.url ?? where} (${where}, by ${first?.author ?? 'unknown'}): fix it, commit, reply in the thread with what changed and the SHA, resolve the thread, record a did on the address stage.`
+  return `Address the review comment at ${first?.url ?? where} (${where}, by ${first?.author ?? 'unknown'}): fix it, commit, reply in the thread with what changed and the SHA, record a did on the address stage. ` +
+    'Resolve the thread only when it is an AI review finding; a thread a person opened stays open for its author. ' +
+    'When the fix would need a workflow, rule or settings file, change no code and reply with what it needs instead.'
 }
 
 async function claimBusy($: EngineInterface, key: string): Promise<boolean> {

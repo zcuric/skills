@@ -38,7 +38,7 @@ Write `<criteriaDir>/security-prompt.md`:
 2. Branch, base SHA, PR title and body.
 3. The changed file list.
 4. The depth and the signals that fired, with every secret-pattern hit as `path · line text`.
-5. The threat model: the profile's `threatModel` as an absolute path, or `none: use the defaults`.
+5. The threat model: the absolute path of its base copy (`<criteriaDir>/rules/<threatModel>`, made as the review prompt's rule files are), or `none: use the defaults`.
 6. The repo rule files, as in the review prompt.
 7. The siblings, one per line as `name · absolute path · contracts yes/no`, or `none`.
 8. On a later round: the security findings already posted, one line each as `path:line · title · open|resolved`.

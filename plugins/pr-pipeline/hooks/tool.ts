@@ -152,11 +152,19 @@ async function verdictSha($: EngineInterface, input: PipelineToolInput, run: Pip
 }
 
 async function profileAnswer($: EngineInterface, input: PipelineToolInput, key: string, run: PipelineRun): Promise<ToolAnswer> {
-  const resolved = await resolveProfile($, run, { save: input.save === true })
+  const prBase = prRefOf(run) === null ? '' : (await refreshPr($, key))?.snapshot?.baseRefName ?? ''
+  const resolved = await resolveProfile($, run, { save: input.save === true, ...(prBase !== '' ? { prBase } : {}) })
   if (!resolved.ok) return deny(resolved.error)
-  const { criteriaDir, profile } = resolved.result
-  await changeRun($, key, existing => ({ ...existing, criteriaDir, mergeMethod: profile.mergeMethod }))
-  return { result: JSON.stringify(resolved.result) }
+  const { criteriaDir, profile, changedGuarded } = resolved.result
+  const guardedAtStart = run.guardedAtStart ?? changedGuarded
+  await changeRun($, key, existing => ({
+    ...existing,
+    criteriaDir,
+    mergeMethod: profile.mergeMethod,
+    ...(guardedAtStart !== undefined ? { guardedAtStart: existing.guardedAtStart ?? guardedAtStart } : {}),
+  }))
+  const newGuarded = changedGuarded !== undefined && guardedAtStart !== undefined ? changedGuarded.filter(path => !guardedAtStart.includes(path)) : undefined
+  return { result: JSON.stringify({ ...resolved.result, ...(newGuarded !== undefined ? { newGuarded } : {}) }) }
 }
 
 async function threadAnswer($: EngineInterface, input: PipelineToolInput, key: string): Promise<ToolAnswer> {
@@ -483,7 +491,10 @@ export const TOOL_DESCRIPTION =
   'action "settings" returns the review settings and detected tools; "set" writes settings ' +
   '(reviewer claude, codex, opencode or custom; review_command, the shell command the custom reviewer runs, is returned but only a person sets it, and custom is refused without one). ' +
   'action "profile" resolves the repo profile (.pr-pipeline.json, then .claude/pr-pipeline.json, else discovery from gh and the build files), ' +
-  'fills every default, creates the criteria directory and returns { source, path?, discovered?, base?, profile, criteriaDir }; ' +
+  'fills every default, creates the criteria directory and returns { source, path?, fromBase?, discovered?, base?, baseRef?, changedGuarded?, newGuarded?, profile, criteriaDir }; ' +
+  'base is the base branch of the run\'s PR, else the default branch, and baseRef (origin/<base>) is fetched on every call; ' +
+  'a tracked profile file the branch changes is read from baseRef (fromBase), one the branch adds is ignored, changedGuarded lists the rule-setting or secret-shaped files the branch changes, ' +
+  'and newGuarded those of them that were not there at the run\'s first profile call. ' +
   '"save": true writes a discovered profile as .pr-pipeline.json (left untracked) and is refused when a profile file exists. ' +
   'A review, acceptance or proof set to done records the commit it judged: "sha", else the PR head, else HEAD. ' +
   'action "close" closes the run. action "status" returns the run as JSON. ' +

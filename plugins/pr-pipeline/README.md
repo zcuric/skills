@@ -75,7 +75,7 @@ Not every change needs the running app. Before stage 6 starts, the pipeline chec
 
 **Save the profile once per repo.** The first run discovers the lint and test commands, the labels and the rule files, and offers to save `.pr-pipeline.json`. Commit it, then add what discovery cannot know: the `e2e` skill, `siblings`, `e2ePolicy`.
 
-**Tell the reviewer what matters in your code.** Put a `REVIEW.md` at the repo root or in a directory, written by the people who own that code: what a reviewer must always check there, what to skip, what a failure looks like. The reviewer reads every `REVIEW.md` above a changed file, and it wins over the reviewer's defaults.
+**Tell the reviewer what matters in your code.** Put a `REVIEW.md` at the repo root or in a directory, written by the people who own that code: what a reviewer must always check there, what to skip, what a failure looks like. The reviewer reads every `REVIEW.md` above a changed file, and it wins over the reviewer's defaults. Rule files, `REVIEW.md`, the threat model and the profile are given to the pipeline and its reviewer as they are on the base branch, not as the PR has them; the pipeline never commits them unless the ticket asks for that change, never reverts one a person committed, and a PR that changes one always gets a human look. That flag is the guard: an agent's harness may still load the checkout's own `CLAUDE.md` or `AGENTS.md`.
 
 ```markdown
 # Review notes: billing/
@@ -88,6 +88,8 @@ Not every change needs the running app. Before stage 6 starts, the pipeline chec
 **Give stage 6 something to drive.** An e2e skill named in the profile gives the strongest proof: a screenshot per criterion against the real stack. Without one the pipeline falls back to a browser smoke, or skips with the reason.
 
 **Review risky work with a second model family.** With Codex, OpenCode or another agent CLI installed, make it the reviewer. A reviewer that did not write the code and does not share the implementer's blind spots finds more.
+
+**Know where it stops.** A failing check gets one rerun when the failure is outside the diff, and at most three fix pushes; then the pipeline lists what it tried and leaves the check red. A person's review thread is fixed when the fix is small and in scope, and never resolved by the pipeline; a redesign, a scope change, an unresolved security issue or a disagreement stays open for a person.
 
 **Read the flags before you approve.** Each ⚠ on a stage row is something the pipeline decided alone or could not do: a derived criterion, a finding it turned down, a lane it could not drive, a fallback. Together with the first line of the proof comment, they are what to read.
 
